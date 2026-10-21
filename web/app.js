@@ -155,7 +155,11 @@ function mountCard(card) {
           result: {
             protocolVersion: "2026-01-26",
             hostInfo: { name: "tend-alexa-plus-simulator", version: "0.1.0" },
-            hostCapabilities: { serverTools: {}, sandbox: { csp: { connectDomains: [], resourceDomains: [] } } },
+            // Only caregivers get in-card actions; view-only users see a read-only card.
+            hostCapabilities: {
+              ...(state.config.caregivers.find((c) => c.id === actorAtMount)?.role === "caregiver" ? { serverTools: {} } : {}),
+              sandbox: { csp: { connectDomains: [], resourceDomains: [] } },
+            },
             hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline"], toolInfo: { tool: { name: card.toolName } } },
           },
         });
