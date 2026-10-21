@@ -22,6 +22,7 @@ export class BrowserMcpClient {
     if (this.initialized) headers["MCP-Protocol-Version"] = this.initialized.protocolVersion;
     const res = await fetch(this.url, { method: "POST", headers, body: JSON.stringify(message) });
     if (res.status === 202) {
+      await res.text().catch(() => "");
       this.onWire({ direction: "server→client", httpStatus: 202, message: "(202 Accepted)" });
       return undefined;
     }

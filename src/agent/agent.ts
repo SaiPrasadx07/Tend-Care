@@ -160,6 +160,15 @@ export class CareAgent {
         }
       }
       let result: CallToolResult;
+      if (!toolIndex.has(name)) {
+        // Tools are role-scoped by the server; explain instead of surfacing a protocol error.
+        const why = input.actor.role === "viewer"
+          ? `${input.actor.name} has view-only access, so I can't change care records. A caregiver in the circle can log that.`
+          : `The ${name} tool isn't available.`;
+        result = { isError: true, content: [{ type: "text", text: `NOT_AVAILABLE: ${why}` }] };
+        traces.push({ name, arguments: args, isError: true, speech: why, structuredContent: null, ms: Date.now() - t0 });
+        return result;
+      }
       try {
         result = await mcp.callTool(name, args);
       } catch (err) {
