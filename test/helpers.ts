@@ -33,7 +33,7 @@ export function seedBasic(care: CareService, clock: Clock): void {
   care.addPerson({ name: "Ravi", aliases: ["Dad"] }, PRIYA);
   const createdAt = new Date(clock.t.getTime() - 3 * 86_400_000).toISOString();
   care.addMedication(
-    { person: "Mom", name: "Metformin", strength: "500 mg", times: ["20:00", "08:00"], quantityOnHand: 10, refillsRemaining: 2, pharmacy: "Walgreens" },
+    { person: "Mom", name: "Metformin", strength: "500 mg", times: ["20:00", "08:00"], quantityOnHand: 10, refillsRemaining: 2, pharmacy: "Maple Street Pharmacy" },
     PRIYA,
     { createdAt },
   );

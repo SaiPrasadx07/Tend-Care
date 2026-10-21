@@ -215,8 +215,10 @@ function renderTurnTrace(text, body) {
       el("div", { class: "wire-dir" }, `${w.direction}${w.httpStatus ? ` · HTTP ${w.httpStatus}` : ""} · ${summarizeWire(w)}`),
       el("pre", { class: "code" }, typeof w.message === "string" ? w.message : JSON.stringify(w.message, null, 2)))));
   const usage = body.usage ? ` · ${body.usage.modelCalls} model calls, ${body.usage.inputTokens + body.usage.outputTokens} tokens` : "";
+  const guard = body.guardrail?.intervened ? el("div", { class: "tool blocked" }, el("span", { class: "tool-name" }, "Amazon Bedrock Guardrail"), " blocked this request (medical advice) before any tool ran.") : null;
   const turn = el("article", { class: "turn" },
     el("div", { class: "turn-head" }, el("strong", {}, `"${text}"`), el("span", { class: "muted" }, `${engine} · ${body.tools.length} tool call${body.tools.length === 1 ? "" : "s"} · ${body.ms} ms${usage}`)),
+    guard,
     tools.length ? tools : el("p", { class: "muted small" }, "No tool calls."),
     wire);
   els.traceList.prepend(turn);
@@ -398,7 +400,7 @@ async function init() {
   els.specVersion.textContent = state.config.server.mcpProtocolVersion;
   els.protoBadge.textContent = `MCP ${state.config.server.mcpProtocolVersion} · Streamable HTTP`;
   if (state.config.engine === "bedrock") {
-    els.engineBadge.textContent = `Amazon Bedrock · ${state.config.model}`;
+    els.engineBadge.textContent = `Amazon Bedrock · ${state.config.model}${state.config.guardrail ? " · Guardrails" : ""}`;
   } else {
     els.engineBadge.textContent = "Offline router (no LLM)";
     els.engineBadge.classList.add("warn");

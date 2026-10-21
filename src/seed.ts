@@ -22,11 +22,11 @@ interface SeedMed {
 }
 
 const MEDS: SeedMed[] = [
-  { person: "Lakshmi", name: "Metformin", strength: "500 mg", times: ["08:00", "20:00"], instructions: "with food", finalStock: 7, refills: 2, pharmacy: "Walgreens on 5th Ave", missed: [[3, "20:00"]] },
-  { person: "Lakshmi", name: "Lisinopril", strength: "10 mg", times: ["08:00"], instructions: "", finalStock: 24, refills: 3, pharmacy: "Walgreens on 5th Ave", missed: [] },
-  { person: "Lakshmi", name: "Atorvastatin", strength: "20 mg", times: ["21:00"], instructions: "at bedtime", finalStock: 40, refills: 5, pharmacy: "Walgreens on 5th Ave", missed: [[5, "21:00"]] },
-  { person: "Ravi", name: "Levothyroxine", strength: "50 mcg", times: ["06:30"], instructions: "empty stomach, 30 min before breakfast", finalStock: 20, refills: 1, pharmacy: "CVS on Elm St", missed: [] },
-  { person: "Ravi", name: "Amlodipine", strength: "5 mg", times: ["09:00"], instructions: "", finalStock: 5, refills: 0, pharmacy: "CVS on Elm St", missed: [[2, "09:00"], [4, "09:00"]], skipped: [[1, "09:00"]] },
+  { person: "Lakshmi", name: "Metformin", strength: "500 mg", times: ["08:00", "20:00"], instructions: "with food", finalStock: 7, refills: 2, pharmacy: "Maple Street Pharmacy", missed: [[3, "20:00"]] },
+  { person: "Lakshmi", name: "Lisinopril", strength: "10 mg", times: ["08:00"], instructions: "", finalStock: 24, refills: 3, pharmacy: "Maple Street Pharmacy", missed: [] },
+  { person: "Lakshmi", name: "Atorvastatin", strength: "20 mg", times: ["21:00"], instructions: "at bedtime", finalStock: 40, refills: 5, pharmacy: "Maple Street Pharmacy", missed: [[5, "21:00"]] },
+  { person: "Ravi", name: "Levothyroxine", strength: "50 mcg", times: ["06:30"], instructions: "empty stomach, 30 min before breakfast", finalStock: 20, refills: 1, pharmacy: "Lakeside Pharmacy", missed: [] },
+  { person: "Ravi", name: "Amlodipine", strength: "5 mg", times: ["09:00"], instructions: "", finalStock: 5, refills: 0, pharmacy: "Lakeside Pharmacy", missed: [[2, "09:00"], [4, "09:00"]], skipped: [[1, "09:00"]] },
 ];
 
 const HISTORY_DAYS = 6;

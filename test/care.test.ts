@@ -120,7 +120,7 @@ test("refill forecast computes runout date and urgency", () => {
 test("refill is two-phase: pending, confirm once, conflict on duplicates", () => {
   const { care } = setup();
   const pending = care.requestRefill({ medication: "metformin" }, PRIYA);
-  assert.match(pending.summary, /Request a refill of Metformin 500 mg for Lakshmi from Walgreens/);
+  assert.match(pending.summary, /Request a refill of Metformin 500 mg for Lakshmi from Maple Street Pharmacy/);
   assert.equal(care.store.openRefillRequests().length, 0, "nothing happens before confirmation");
   const done = care.confirmAction({ actionId: pending.actionId }, PRIYA);
   assert.match(done.pharmacyMessage!, /Please refill Metformin 500 mg/);

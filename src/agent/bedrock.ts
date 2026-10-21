@@ -23,6 +23,12 @@ export interface EngineResult {
   reply: string;
   history: Message[];
   usage: { inputTokens: number; outputTokens: number; modelCalls: number };
+  guardrailIntervened: boolean;
+}
+
+export interface GuardrailRef {
+  id: string;
+  version: string;
 }
 
 const MAX_STEPS = 6;
@@ -54,7 +60,8 @@ export function trimHistory(messages: Message[]): Message[] {
   let start = Math.max(0, messages.length - MAX_HISTORY);
   while (start < messages.length) {
     const m = messages[start]!;
-    if (m.role === "user" && m.content?.some((c) => "text" in c && c.text !== undefined) && !m.content.some((c) => "toolResult" in c && c.toolResult)) break;
+    const isUserUtterance = m.content?.some((c) => ("text" in c && c.text !== undefined) || ("guardContent" in c && c.guardContent !== undefined));
+    if (m.role === "user" && isUserUtterance && !m.content!.some((c) => "toolResult" in c && c.toolResult)) break;
     start++;
   }
   return messages.slice(start);
@@ -62,15 +69,20 @@ export function trimHistory(messages: Message[]): Message[] {
 
 export class BedrockEngine {
   readonly modelId: string;
+  readonly guardrail: GuardrailRef | undefined;
   private readonly client: BedrockRuntimeClient;
 
-  constructor(opts: { region: string; modelId: string; client?: BedrockRuntimeClient }) {
+  constructor(opts: { region: string; modelId: string; guardrail?: GuardrailRef; client?: BedrockRuntimeClient }) {
     this.modelId = opts.modelId;
+    this.guardrail = opts.guardrail;
     this.client = opts.client ?? new BedrockRuntimeClient({ region: opts.region, maxAttempts: 3 });
   }
 
   async run(turn: EngineTurn): Promise<EngineResult> {
-    const messages: Message[] = [...turn.history, { role: "user", content: [{ text: turn.userText }] }];
+    // With a guardrail, only the user's own words are evaluated (guardContent), so tool
+    // results that legitimately mention medications don't trip the "medical advice" topic.
+    const userContent: ContentBlock[] = this.guardrail ? [{ guardContent: { text: { text: turn.userText } } }] : [{ text: turn.userText }];
+    const messages: Message[] = [...turn.history, { role: "user", content: userContent }];
     const toolConfig = { tools: turn.tools.map(toBedrockTool) };
     const usage = { inputTokens: 0, outputTokens: 0, modelCalls: 0 };
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -81,6 +93,7 @@ export class BedrockEngine {
           messages,
           toolConfig,
           inferenceConfig: { maxTokens: 700, temperature: 0.2 },
+          ...(this.guardrail ? { guardrailConfig: { guardrailIdentifier: this.guardrail.id, guardrailVersion: this.guardrail.version, trace: "enabled" as const } } : {}),
         }),
       );
       usage.modelCalls++;
@@ -88,11 +101,16 @@ export class BedrockEngine {
       usage.outputTokens += res.usage?.outputTokens ?? 0;
       const msg = res.output?.message;
       if (!msg) throw new Error("Bedrock returned no message");
+      if (res.stopReason === "guardrail_intervened") {
+        const reply = (msg.content ?? []).map((c) => ("text" in c && c.text ? c.text : "")).join(" ").trim();
+        // Keep the blocked exchange out of history so it isn't re-evaluated on every later turn.
+        return { reply: reply || "I can't help with that one. Please ask the pharmacist or doctor.", history: turn.history, usage, guardrailIntervened: true };
+      }
       messages.push(msg);
       const toolUses = (msg.content ?? []).filter((c): c is ContentBlock.ToolUseMember => "toolUse" in c && c.toolUse !== undefined);
       if (res.stopReason !== "tool_use" || toolUses.length === 0) {
         const reply = (msg.content ?? []).map((c) => ("text" in c && c.text ? c.text : "")).join(" ").trim();
-        return { reply: reply || "Okay.", history: trimHistory(messages), usage };
+        return { reply: reply || "Okay.", history: trimHistory(messages), usage, guardrailIntervened: false };
       }
       const results: ContentBlock[] = [];
       for (const block of toolUses) {
@@ -103,6 +121,6 @@ export class BedrockEngine {
       messages.push({ role: "user", content: results });
     }
     messages.push({ role: "assistant", content: [{ text: "Sorry, that took too many steps. Could you say it more simply?" }] });
-    return { reply: "Sorry, that took too many steps. Could you say it more simply?", history: trimHistory(messages), usage };
+    return { reply: "Sorry, that took too many steps. Could you say it more simply?", history: trimHistory(messages), usage, guardrailIntervened: false };
   }
 }

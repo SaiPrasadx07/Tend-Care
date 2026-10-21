@@ -15,7 +15,8 @@
     "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
-    "smoke:bedrock": "node scripts/bedrock-smoke.ts"
+    "smoke:bedrock": "node scripts/bedrock-smoke.ts",
+    "guardrail:create": "node scripts/create-guardrail.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1154.0",
@@ -25,6 +26,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@aws-sdk/client-bedrock": "^3.1154.0",
     "@types/express": "^5.0.6",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2"

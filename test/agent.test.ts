@@ -173,7 +173,7 @@ describe("Amazon Bedrock engine (Converse tool-use loop, mocked client)", () => 
         const tr = input.messages!.at(-1)!.content![0]!.toolResult!;
         assert.equal(tr.status, "error");
         assert.match(tr.content![0]!.text!, /HOST_POLICY/);
-        return say_("I can request a refill of Mom's metformin from Walgreens. Should I go ahead?");
+        return say_("I can request a refill of Mom's metformin from Maple Street Pharmacy. Should I go ahead?");
       },
       // Next turn: the user says yes; now confirm is allowed.
       () => toolUse("t3", "confirm_action", { action_id: actionId }),
@@ -190,6 +190,35 @@ describe("Amazon Bedrock engine (Converse tool-use loop, mocked client)", () => 
       assert.ok(!ok.isError && !ok.blockedByHost, JSON.stringify(t2.tools));
       // Conversation history carried over to the second turn.
       assert.ok(fake.calls[3]!.messages!.length > 2);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("Amazon Bedrock Guardrails", () => {
+  test("only the user's words are guarded, and a blocked turn is kept out of history", async () => {
+    const fake = new FakeBedrock([
+      () => ({
+        $metadata: {},
+        stopReason: "guardrail_intervened",
+        output: { message: { role: "assistant", content: [{ text: "I can't give medical advice. Please call the pharmacist or doctor." }] } },
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        metrics: { latencyMs: 1 },
+      }),
+      () => say_("Lakshmi has two doses left today."),
+    ]);
+    const engine = new BedrockEngine({ region: "us-east-1", modelId: "m", guardrail: { id: "gr-123", version: "1" }, client: fake as unknown as BedrockRuntimeClient });
+    const h = await startHarness({ bedrock: engine });
+    try {
+      const blocked = (await say(h.base, h.tokens.priya, "Mom missed a dose, should she take two now?")) as TurnBody & { guardrail: { configured: boolean; intervened: boolean } };
+      assert.deepEqual(blocked.guardrail, { configured: true, intervened: true });
+      assert.match(blocked.reply, /can't give medical advice/);
+      const req = fake.calls[0]!;
+      assert.deepEqual(req.guardrailConfig, { guardrailIdentifier: "gr-123", guardrailVersion: "1", trace: "enabled" });
+      assert.deepEqual(req.messages!.at(-1)!.content, [{ guardContent: { text: { text: "Mom missed a dose, should she take two now?" } } }]);
+      await say(h.base, h.tokens.priya, "What's left for Mom today?");
+      assert.equal(fake.calls[1]!.messages!.length, 1, "blocked exchange was not carried into history");
     } finally {
       await h.close();
     }

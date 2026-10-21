@@ -41,6 +41,7 @@ export interface TurnResult {
   cards: UiCard[];
   wire: WireEntry[];
   usage: { inputTokens: number; outputTokens: number; modelCalls: number } | null;
+  guardrail: { configured: boolean; intervened: boolean };
   ms: number;
 }
 
@@ -93,6 +94,10 @@ export class CareAgent {
 
   get modelId(): string | null {
     return this.opts.bedrock?.modelId ?? null;
+  }
+
+  get guardrailId(): string | null {
+    return this.opts.bedrock?.guardrail?.id ?? null;
   }
 
   private session(id: string, actor: Actor): Session {
@@ -206,6 +211,7 @@ export class CareAgent {
     let engineNote: string | null = null;
     let reply: string;
     let usage: TurnResult["usage"] = null;
+    let guardrailIntervened = false;
     try {
       if (this.opts.bedrock) {
         try {
@@ -219,6 +225,7 @@ export class CareAgent {
           session.history = r.history;
           reply = r.reply;
           usage = r.usage;
+          guardrailIntervened = r.guardrailIntervened;
         } catch (err) {
           if (this.opts.engine === "bedrock") throw err;
           // auto mode: degrade to the offline router rather than failing the demo.
@@ -242,17 +249,25 @@ export class CareAgent {
       cards,
       wire,
       usage,
+      guardrail: { configured: Boolean(this.opts.bedrock?.guardrail), intervened: guardrailIntervened },
       ms: Date.now() - started,
     };
   }
 }
 
-export function createAgent(opts: { mcpUrl: string; timezone: string; engine: EngineChoice; awsRegion: string; bedrockModelId: string }): CareAgent {
+export function createAgent(opts: {
+  mcpUrl: string;
+  timezone: string;
+  engine: EngineChoice;
+  awsRegion: string;
+  bedrockModelId: string;
+  guardrail?: { id: string; version: string };
+}): CareAgent {
   const useBedrock = opts.engine === "bedrock" || (opts.engine === "auto" && hasAwsCredentialSource());
   return new CareAgent({
     mcpUrl: opts.mcpUrl,
     timezone: opts.timezone,
     engine: opts.engine,
-    bedrock: useBedrock ? new BedrockEngine({ region: opts.awsRegion, modelId: opts.bedrockModelId }) : undefined,
+    bedrock: useBedrock ? new BedrockEngine({ region: opts.awsRegion, modelId: opts.bedrockModelId, guardrail: opts.guardrail }) : undefined,
   });
 }

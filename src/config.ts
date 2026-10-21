@@ -25,6 +25,7 @@ export interface Config {
   engine: EngineChoice;
   awsRegion: string;
   bedrockModelId: string;
+  guardrail?: { id: string; version: string };
 }
 
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -81,5 +82,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     engine,
     awsRegion: env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? "us-east-1",
     bedrockModelId: env.BEDROCK_MODEL_ID ?? "us.amazon.nova-pro-v1:0",
+    guardrail: env.BEDROCK_GUARDRAIL_ID ? { id: env.BEDROCK_GUARDRAIL_ID, version: env.BEDROCK_GUARDRAIL_VERSION ?? "DRAFT" } : undefined,
   };
 }

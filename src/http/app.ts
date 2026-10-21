@@ -109,6 +109,7 @@ export function createApp({ config, care, auth, agent }: AppDeps): express.Expre
       server: { name: SERVER_NAME, version: SERVER_VERSION, mcpProtocolVersion: LATEST_PROTOCOL_VERSION, mcpPath: "/mcp" },
       engine: agent.engineName,
       model: agent.modelId,
+      guardrail: agent.guardrailId !== null,
       timezone: config.timezone,
       demoMode: config.demoMode,
       caregivers: auth.listActors(),
