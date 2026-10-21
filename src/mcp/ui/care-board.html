@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tend care board</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5d6677; --line: #e3e7ee; --chip: #f2f4f8;
+    --ok: #1f7a4d; --ok-bg: #e5f5ec; --warn: #9a5b00; --warn-bg: #fff3dc; --bad: #b42323; --bad-bg: #fde8e8;
+    --due: #1b5fb8; --due-bg: #e3eefc; --accent: #0f766e;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #12161f; --fg: #e8ecf3; --muted: #9aa4b5; --line: #263042; --chip: #1b2230;
+    --ok: #6fd3a0; --ok-bg: #12301f; --warn: #f2c26b; --warn-bg: #33270f; --bad: #ff8f8f; --bad-bg: #3a1717;
+    --due: #8cb8ff; --due-bg: #152740; --accent: #5eead4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.4; }
+  .wrap { padding: 14px 16px 16px; }
+  h2 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .person { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .person:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+  .pname { font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .pct { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 500; font-size: 12px; }
+  ul { list-style: none; margin: 6px 0 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .time { width: 64px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .med { flex: 1; min-width: 0; }
+  .med small { display: block; color: var(--muted); font-size: 11px; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+  .taken { background: var(--ok-bg); color: var(--ok); }
+  .missed, .critical { background: var(--bad-bg); color: var(--bad); }
+  .due, .soon { background: var(--due-bg); color: var(--due); }
+  .skipped { background: var(--warn-bg); color: var(--warn); }
+  button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; margin-top: 3px; }
+  .bar > span { display: block; height: 100%; background: var(--ok); }
+  .alert { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
+  .note { font-size: 12px; color: var(--muted); padding: 3px 0; }
+  .empty { color: var(--muted); }
+  .err { color: var(--bad); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><div class="empty">Waiting for data…</div></div>
+<script>
+(() => {
+  "use strict";
+  // Minimal MCP Apps (io.modelcontextprotocol/ui, spec 2026-01-26) view, no dependencies.
+  let nextId = 1;
+  const pending = new Map();
+  const root = document.getElementById("root");
+  let lastResult = null;
+  let canCallTools = false;
+
+  function send(msg) { window.parent.postMessage(msg, "*"); }
+  function request(method, params) {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => { if (pending.delete(id)) reject(new Error("timeout")); }, 15000);
+    });
+  }
+  function notify(method, params) { send({ jsonrpc: "2.0", method, params }); }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && pending.has(msg.id) && !msg.method) {
+      const p = pending.get(msg.id); pending.delete(msg.id);
+      msg.error ? p.reject(new Error(msg.error.message || "error")) : p.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") { lastResult = msg.params; render(); }
+    if (msg.method === "ui/notifications/host-context-changed" && msg.params && msg.params.theme) applyTheme(msg.params.theme);
+  });
+
+  function applyTheme(theme) { document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light"; }
+
+  function el(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v);
+    }
+    for (const k of kids.flat()) if (k != null && k !== false) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  }
+
+  function reportSize() {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    notify("ui/notifications/size-changed", { height: h });
+  }
+
+  async function markTaken(btn, slot, personName) {
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      const res = await request("tools/call", { name: "log_dose", arguments: { medication: slot.medicationId, person: personName, slot_time: slot.time } });
+      if (res && res.isError) throw new Error(res.content && res.content[0] ? res.content[0].text : "failed");
+      const refreshed = await request("tools/call", { name: "get_care_status", arguments: { person: personName } });
+      if (refreshed && refreshed.structuredContent) { lastResult = refreshed; render(); }
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "Mark taken";
+      root.append(el("div", { class: "err" }, "Couldn't log dose: " + e.message));
+      reportSize();
+    }
+  }
+
+  function renderStatus(d) {
+    const frag = [el("h2", {}, "Today's care"), el("div", { class: "sub" }, `${d.date} · ${d.localTime} · ${d.timezone}`)];
+    for (const p of d.people) {
+      const items = p.slots.map((s) => el("li", {},
+        el("span", { class: "time" }, s.timeLabel),
+        el("span", { class: "med" }, s.medication, el("small", {}, [s.dose, s.instructions].filter(Boolean).join(" · ") + (s.loggedBy ? ` · by ${s.loggedBy}` : ""))),
+        (s.state === "due" || s.state === "missed") && canCallTools
+          ? el("button", { onclick: (e) => markTaken(e.currentTarget, s, p.name) }, "Mark taken") : null,
+        el("span", { class: `chip ${s.state}` }, s.state)));
+      frag.push(el("div", { class: "person" },
+        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, `${p.counts.taken}/${p.slots.length} logged`)),
+        el("ul", {}, items.length ? items : el("li", { class: "empty" }, "Nothing scheduled"))));
+    }
+    for (const a of d.supplyAlerts || []) frag.push(el("div", { class: "alert" }, `${a.personName}: ${a.medication} runs out in ${a.daysLeft} days (${a.runoutDate}). ${a.advice}`));
+    for (const a of d.pendingActions || []) frag.push(el("div", { class: "alert" }, `Awaiting confirmation: ${a.summary}`));
+    return frag;
+  }
+
+  function renderForecast(d) {
+    const frag = [el("h2", {}, "Refill forecast"), el("div", { class: "sub" }, `Flagging anything that runs out within ${d.withinDays} days`)];
+    frag.push(el("ul", {}, d.items.map((i) => el("li", {},
+      el("span", { class: "time" }, `${i.daysLeft}d left`),
+      el("span", { class: "med" }, `${i.personName} · ${i.medication}`, el("small", {}, `${i.quantityOnHand} on hand · runs out ${i.runoutDate} · ${i.refillsRemaining} refills${i.openRefillRequest ? " · refill requested" : ""}`)),
+      el("span", { class: `chip ${i.urgency}` }, i.urgency)))));
+    return frag;
+  }
+
+  function renderHandoff(d) {
+    const frag = [el("h2", {}, "Caregiver handoff"), el("div", { class: "sub" }, `${d.fromDate} → ${d.toDate} (${d.days} days)`)];
+    for (const p of d.people) {
+      frag.push(el("div", { class: "person" },
+        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, p.overallAdherencePct == null ? "—" : `${p.overallAdherencePct}% adherence`)),
+        el("ul", {}, p.adherence.map((a) => el("li", {},
+          el("span", { class: "med" }, a.medication, el("small", {}, `${a.taken}/${a.scheduled} taken · ${a.missed} missed · ${a.skipped} skipped`),
+            el("div", { class: "bar" }, el("span", { style: `width:${a.adherencePct ?? 0}%` }))),
+        ))),
+        p.notes.map((n) => el("div", { class: "note" }, `📝 ${n.text} — ${n.loggedBy}`))));
+    }
+    for (const a of d.supplyAlerts || []) frag.push(el("div", { class: "alert" }, `${a.personName}: ${a.medication} runs out in ${a.daysLeft} days. ${a.advice}`));
+    return frag;
+  }
+
+  function render() {
+    const d = lastResult && lastResult.structuredContent;
+    root.replaceChildren();
+    if (!d) { root.append(el("div", { class: "empty" }, "No data.")); }
+    else if (Array.isArray(d.people) && d.people[0] && "slots" in d.people[0]) root.append(...renderStatus(d));
+    else if (Array.isArray(d.items) && "withinDays" in d) root.append(...renderForecast(d));
+    else if (Array.isArray(d.people) && "fromDate" in d) root.append(...renderHandoff(d));
+    else root.append(el("div", { class: "empty" }, "Unsupported result."));
+    reportSize();
+  }
+
+  (async () => {
+    try {
+      const init = await request("ui/initialize", {
+        protocolVersion: "2026-01-26",
+        appInfo: { name: "tend-care-board", version: "0.1.0" },
+        appCapabilities: { availableDisplayModes: ["inline"] },
+      });
+      const ctx = (init && init.hostContext) || {};
+      applyTheme(ctx.theme);
+      canCallTools = Boolean(init && init.hostCapabilities && init.hostCapabilities.serverTools);
+      notify("ui/notifications/initialized", {});
+    } catch (e) {
+      root.replaceChildren(el("div", { class: "err" }, "Host handshake failed: " + e.message));
+    }
+  })();
+})();
+</script>
+</body>
+</html>

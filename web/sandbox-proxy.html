@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MCP Apps sandbox proxy</title>
+<style>html,body{margin:0;padding:0;background:transparent}iframe{border:0;width:100%;display:block}</style>
+</head>
+<body>
+<script>
+// MCP Apps sandbox proxy (io.modelcontextprotocol/ui, 2026-01-26).
+// Runs in an opaque-origin sandbox and is served with a CSP that forbids
+// network access, then renders the server's view in a nested sandboxed
+// iframe and relays JSON-RPC between host and view.
+(() => {
+  "use strict";
+  let inner = null;
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (event.source === window.parent) {
+      if (msg.method === "ui/notifications/sandbox-resource-ready") {
+        if (inner) return; // load exactly once
+        inner = document.createElement("iframe");
+        inner.setAttribute("sandbox", "allow-scripts");
+        inner.setAttribute("title", "MCP App view");
+        inner.srcdoc = String(msg.params && msg.params.html || "");
+        document.body.appendChild(inner);
+        return;
+      }
+      if (typeof msg.method === "string" && msg.method.startsWith("ui/notifications/sandbox-")) return;
+      if (inner && inner.contentWindow) inner.contentWindow.postMessage(msg, "*");
+    } else if (inner && event.source === inner.contentWindow) {
+      if (msg.method === "ui/notifications/size-changed" && msg.params && msg.params.height) {
+        inner.style.height = msg.params.height + "px";
+      }
+      window.parent.postMessage(msg, "*");
+    }
+  });
+  window.parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {} }, "*");
+})();
+</script>
+</body>
+</html>
