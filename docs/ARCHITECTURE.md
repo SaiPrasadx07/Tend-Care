@@ -3,7 +3,7 @@
 Tend has three layers. Each one is independently testable.
 
 ```
-┌──────────────────────── Browser: Alexa+ simulator (web/) ────────────────────────┐
+┌────────────── Browser: caregiver app + Alexa+ companion (web/) ──────────────────┐
 │ Device UI (Web Speech in, speechSynthesis out)                                   │
 │ MCP Apps host: sandbox-proxy.html → nested sandboxed iframe → ui://tend/care-board │
 │ Browser MCP client (mcp-browser.js): Care feed, Inspector, proxied card tool calls │
@@ -61,9 +61,17 @@ All care state lives in SQLite, not in an MCP session. So `/mcp` builds a fresh 
 ## MCP Apps implementation
 
 - **Server:** registers `ui://tend/care-board` (`text/html;profile=mcp-app`, `_meta.ui.csp` with no external domains). Three read tools reference it.
-- **View** (`src/mcp/ui/care-board.html`): dependency-free. Sends `ui/initialize` (protocol `2026-01-26`) then `ui/notifications/initialized`, renders on `ui/notifications/tool-result`, and reports `ui/notifications/size-changed`. When the host advertises `serverTools`, it shows **Mark taken**, which calls `tools/call log_dose` and then refreshes with `get_care_status`.
-- **Host** (`web/app.js` + `web/sandbox-proxy.html`): uses the spec's double-iframe sandbox proxy. The outer frame is opaque-origin with a CSP forbidding all network access. The inner `srcdoc` view inherits that CSP. The host answers `ui/initialize`, sends tool-input then tool-result, resizes on size-changed, and proxies `tools/call` for an allowlist of tools.
+- **View** (`src/mcp/ui/care-board.html`): dependency-free. Sends `ui/initialize` (protocol `2026-01-26`) then `ui/notifications/initialized`, renders on `ui/notifications/tool-result`, and reports `ui/notifications/size-changed`. When the host advertises `serverTools` (caregivers only), it shows **Mark given**, which calls `tools/call log_dose` and then refreshes with `get_care_status`.
+- **Host** (`web/js/assistant.js` + `web/sandbox-proxy.html`): uses the spec's double-iframe sandbox proxy. The outer frame is opaque-origin with a CSP forbidding all network access. The inner `srcdoc` view inherits that CSP. The host answers `ui/initialize`, sends tool-input then tool-result, resizes on size-changed, and proxies `tools/call` for an allowlist of tools.
 
 ## Data model
 
 `people`, `medications` (times as JSON `["08:00","20:00"]`), `dose_events` (slot date/time, status, recorded_at, logged_by), `notes`, `pending_actions`, `refill_requests`, `activity`. SQLite runs in WAL mode with foreign keys on.
+
+## Caregiver web app (web/)
+
+- **No build step, no framework.** It uses ES modules under `web/js/`, a token-based design system in `styles.css`, and self-hosted OFL fonts (Newsreader, Instrument Sans, JetBrains Mono), so the strict CSP (`script-src 'self'`) holds and the app works offline.
+- **Data layer** (`api.js`): each refresh runs five parallel MCP `tools/call`s as the selected caregiver: `list_care_recipients`, `get_care_status`, `forecast_refills`, `get_handoff_report` and `get_recent_activity`. One shared `initialize` promise prevents duplicate handshakes. Writes go through the same tools, so the double-dose guard, two-phase refills and role scoping are enforced server-side. View-only users simply don't get action buttons, and the server would refuse them anyway.
+- **Visuals** (`charts.js`): the day timeline is SVG with percentage coordinates, so it's crisp at any width without resize handling. The adherence heatmap is an accessible HTML grid (`role="table"`) fed by the handoff report's per-day `daily` grid. Supply runway bars are drawn against a 30-day scale with the 7-day refill point. Status always appears as icon + label + color, using a palette validated for color-vision deficiency on the ivory surface.
+- **Live sync:** a 20 s poll while the tab is visible, a diff against the previous snapshot to highlight changed doses and new activity, and toasts for changes by other caregivers.
+- **Developer workspace:** every JSON-RPC message from the dashboard, cards, inspector and assistant is kept in a ring buffer with source and latency, so the protocol stays inspectable without dominating the caregiver experience.

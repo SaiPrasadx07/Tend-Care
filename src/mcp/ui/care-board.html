@@ -5,42 +5,51 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tend care board</title>
 <style>
+  /* Tend palette (the view's sandbox CSP blocks network fonts, so system faces are used). */
   :root {
-    --bg: #ffffff; --fg: #1d2330; --muted: #5d6677; --line: #e3e7ee; --chip: #f2f4f8;
-    --ok: #1f7a4d; --ok-bg: #e5f5ec; --warn: #9a5b00; --warn-bg: #fff3dc; --bad: #b42323; --bad-bg: #fde8e8;
-    --due: #1b5fb8; --due-bg: #e3eefc; --accent: #0f766e;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --bg: #fffdf8; --fg: #1d2a23; --muted: #6b766e; --line: #e2d9c7; --chip: #efe8da; --forest: #1f4a37; --accent: #237a76;
+    --ok: #1d5f36; --ok-bg: #e2f0e5; --ok-fill: #278048;
+    --bad: #9c3220; --bad-bg: #f9e3dc; --bad-fill: #c8432c;
+    --warn: #7d5400; --warn-bg: #f8ecd0; --warn-fill: #d08c00;
+    --due: #284f9e; --due-bg: #e2eaf8; --due-fill: #3366cc;
+    --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   }
   :root[data-theme="dark"] {
-    --bg: #12161f; --fg: #e8ecf3; --muted: #9aa4b5; --line: #263042; --chip: #1b2230;
-    --ok: #6fd3a0; --ok-bg: #12301f; --warn: #f2c26b; --warn-bg: #33270f; --bad: #ff8f8f; --bad-bg: #3a1717;
-    --due: #8cb8ff; --due-bg: #152740; --accent: #5eead4;
+    --bg: #14211b; --fg: #f1ece1; --muted: #a8b3ab; --line: #2b3d33; --chip: #1f3027; --forest: #9fd8c4; --accent: #6ed3c5;
+    --ok: #8fdcaa; --ok-bg: #173826; --bad: #ffab98; --bad-bg: #3d1d16; --warn: #f2c26b; --warn-bg: #352810; --due: #a9c3ff; --due-bg: #1b2a45;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.4; }
-  .wrap { padding: 14px 16px 16px; }
-  h2 { font-size: 15px; margin: 0 0 2px; }
-  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
-  .person { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .wrap { padding: 16px 18px 18px; }
+  .eyebrow { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0; }
+  h2 { font-family: var(--serif); font-weight: 500; font-size: 20px; margin: 2px 0 2px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .person { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
   .person:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
-  .pname { font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .pct { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 500; font-size: 12px; }
+  .pname { font-family: var(--serif); font-size: 17px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .pct { font-family: "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
   ul { list-style: none; margin: 6px 0 0; padding: 0; }
-  li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
-  .time { width: 64px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  li { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .time { width: 66px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 600; }
   .med { flex: 1; min-width: 0; }
-  .med small { display: block; color: var(--muted); font-size: 11px; }
-  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
-  .taken { background: var(--ok-bg); color: var(--ok); }
+  .med small { display: block; color: var(--muted); font-size: 11.5px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+  .taken, .ok { background: var(--ok-bg); color: var(--ok); }
   .missed, .critical { background: var(--bad-bg); color: var(--bad); }
-  .due, .soon { background: var(--due-bg); color: var(--due); }
-  .skipped { background: var(--warn-bg); color: var(--warn); }
-  button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+  .due { background: var(--due-bg); color: var(--due); }
+  .skipped, .soon { background: var(--warn-bg); color: var(--warn); }
+  button { font: inherit; font-size: 12px; font-weight: 600; border: 0; background: var(--forest); color: #f6f1e7; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
-  .bar { height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; margin-top: 3px; }
-  .bar > span { display: block; height: 100%; background: var(--ok); }
-  .alert { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
-  .note { font-size: 12px; color: var(--muted); padding: 3px 0; }
+  .strip { display: flex; gap: 2px; margin-top: 5px; }
+  .strip i { flex: 1; height: 8px; border-radius: 2px; background: var(--chip); }
+  .strip i.taken { background: var(--ok-fill); }
+  .strip i.missed { background: var(--bad-fill); }
+  .strip i.skipped { background: var(--warn-fill); }
+  .strip i.due { background: var(--due-fill); }
+  .alert { margin-top: 12px; padding: 9px 11px; border-radius: 10px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; }
+  .note { font-family: var(--serif); font-size: 13.5px; color: var(--fg); padding: 4px 0 0 10px; border-left: 2px solid var(--line); margin-top: 6px; }
+  .note small { display: block; font-family: "Segoe UI", system-ui, sans-serif; color: var(--muted); font-size: 11px; }
   .empty { color: var(--muted); }
   .err { color: var(--bad); font-size: 12px; margin-top: 8px; }
 </style>
@@ -56,6 +65,7 @@
   const root = document.getElementById("root");
   let lastResult = null;
   let canCallTools = false;
+  const LABEL = { taken: "Given", missed: "Missed", skipped: "Skipped", due: "Due now", upcoming: "Upcoming", critical: "Critical", soon: "Refill soon", ok: "Stocked" };
 
   function send(msg) { window.parent.postMessage(msg, "*"); }
   function request(method, params) {
@@ -105,23 +115,23 @@
       const refreshed = await request("tools/call", { name: "get_care_status", arguments: { person: personName } });
       if (refreshed && refreshed.structuredContent) { lastResult = refreshed; render(); }
     } catch (e) {
-      btn.disabled = false; btn.textContent = "Mark taken";
+      btn.disabled = false; btn.textContent = "Mark given";
       root.append(el("div", { class: "err" }, "Couldn't log dose: " + e.message));
       reportSize();
     }
   }
 
   function renderStatus(d) {
-    const frag = [el("h2", {}, "Today's care"), el("div", { class: "sub" }, `${d.date} · ${d.localTime} · ${d.timezone}`)];
+    const frag = [el("p", { class: "eyebrow" }, "Tend · Today"), el("h2", {}, "Today's care"), el("div", { class: "sub" }, `${d.date} · as of ${d.localTime}`)];
     for (const p of d.people) {
       const items = p.slots.map((s) => el("li", {},
         el("span", { class: "time" }, s.timeLabel),
         el("span", { class: "med" }, s.medication, el("small", {}, [s.dose, s.instructions].filter(Boolean).join(" · ") + (s.loggedBy ? ` · by ${s.loggedBy}` : ""))),
         (s.state === "due" || s.state === "missed") && canCallTools
-          ? el("button", { onclick: (e) => markTaken(e.currentTarget, s, p.name) }, "Mark taken") : null,
-        el("span", { class: `chip ${s.state}` }, s.state)));
+          ? el("button", { onclick: (e) => markTaken(e.currentTarget, s, p.name) }, "Mark given") : null,
+        el("span", { class: `chip ${s.state}` }, LABEL[s.state] || s.state)));
       frag.push(el("div", { class: "person" },
-        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, `${p.counts.taken}/${p.slots.length} logged`)),
+        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, `${p.counts.taken} of ${p.slots.length} given`)),
         el("ul", {}, items.length ? items : el("li", { class: "empty" }, "Nothing scheduled"))));
     }
     for (const a of d.supplyAlerts || []) frag.push(el("div", { class: "alert" }, `${a.personName}: ${a.medication} runs out in ${a.daysLeft} days (${a.runoutDate}). ${a.advice}`));
@@ -130,24 +140,24 @@
   }
 
   function renderForecast(d) {
-    const frag = [el("h2", {}, "Refill forecast"), el("div", { class: "sub" }, `Flagging anything that runs out within ${d.withinDays} days`)];
+    const frag = [el("p", { class: "eyebrow" }, "Tend · Supply"), el("h2", {}, "Refill forecast"), el("div", { class: "sub" }, `Flagging anything that runs out within ${d.withinDays} days`)];
     frag.push(el("ul", {}, d.items.map((i) => el("li", {},
       el("span", { class: "time" }, `${i.daysLeft}d left`),
       el("span", { class: "med" }, `${i.personName} · ${i.medication}`, el("small", {}, `${i.quantityOnHand} on hand · runs out ${i.runoutDate} · ${i.refillsRemaining} refills${i.openRefillRequest ? " · refill requested" : ""}`)),
-      el("span", { class: `chip ${i.urgency}` }, i.urgency)))));
+      el("span", { class: `chip ${i.urgency}` }, LABEL[i.urgency] || i.urgency)))));
     return frag;
   }
 
   function renderHandoff(d) {
-    const frag = [el("h2", {}, "Caregiver handoff"), el("div", { class: "sub" }, `${d.fromDate} → ${d.toDate} (${d.days} days)`)];
+    const frag = [el("p", { class: "eyebrow" }, "Tend · Handoff"), el("h2", {}, "Caregiver handoff"), el("div", { class: "sub" }, `${d.fromDate} → ${d.toDate} (${d.days} days)`)];
     for (const p of d.people) {
       frag.push(el("div", { class: "person" },
-        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, p.overallAdherencePct == null ? "—" : `${p.overallAdherencePct}% adherence`)),
+        el("div", { class: "pname" }, p.name, el("span", { class: "pct" }, p.overallAdherencePct == null ? "—" : `${p.overallAdherencePct}% of doses given`)),
         el("ul", {}, p.adherence.map((a) => el("li", {},
-          el("span", { class: "med" }, a.medication, el("small", {}, `${a.taken}/${a.scheduled} taken · ${a.missed} missed · ${a.skipped} skipped`),
-            el("div", { class: "bar" }, el("span", { style: `width:${a.adherencePct ?? 0}%` }))),
+          el("span", { class: "med" }, a.medication, el("small", {}, `${a.taken}/${a.scheduled} given · ${a.missed} missed · ${a.skipped} skipped`),
+            el("div", { class: "strip", title: "Each block is one scheduled dose, oldest first" }, (a.daily || []).flatMap((day) => day.slots.filter((x) => x.state !== "untracked").map((x) => el("i", { class: x.state, title: `${day.date} ${x.time}: ${LABEL[x.state] || x.state}` }))))),
         ))),
-        p.notes.map((n) => el("div", { class: "note" }, `📝 ${n.text} — ${n.loggedBy}`))));
+        p.notes.map((n) => el("div", { class: "note" }, n.text, el("small", {}, `${n.category} · ${n.loggedBy}`)))));
     }
     for (const a of d.supplyAlerts || []) frag.push(el("div", { class: "alert" }, `${a.personName}: ${a.medication} runs out in ${a.daysLeft} days. ${a.advice}`));
     return frag;

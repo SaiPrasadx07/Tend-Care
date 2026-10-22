@@ -35,8 +35,20 @@ Tend **never gives medical advice**. The rule appears in the MCP server instruct
 
 - **Self-hosted MCP server**, protocol `2025-11-25` (negotiated in `initialize` and asserted in tests), over **Streamable HTTP** at `POST /mcp`. Implemented with the official `@modelcontextprotocol/sdk` (`src/mcp/server.ts`, `src/http/app.ts`).
 - **13 tools** with zod-validated inputs, declared **output schemas** (the SDK validates every `structuredContent` before it leaves the server), and `readOnlyHint`/`destructiveHint` annotations.
-- **MCP Apps** (`io.modelcontextprotocol/ui`): status, refill and handoff tools declare `_meta.ui.resourceUri: ui://tend/care-board`, served as `text/html;profile=mcp-app`. The simulator is a real MCP Apps host: it runs a sandbox proxy, the `ui/initialize` handshake, `tool-input`/`tool-result` notifications and proxied `tools/call` (the card's **Mark taken** button).
-- **Simulated Alexa+ experience** (per the official FAQ): the web page and its agent are *real MCP clients*. They send `initialize`, `tools/list` and `tools/call` over Streamable HTTP, and every JSON-RPC message is shown in the **MCP traffic** panel.
+- **MCP Apps** (`io.modelcontextprotocol/ui`): status, refill and handoff tools declare `_meta.ui.resourceUri: ui://tend/care-board`, served as `text/html;profile=mcp-app`. The simulator is a real MCP Apps host: it runs a sandbox proxy, the `ui/initialize` handshake, `tool-input`/`tool-result` notifications and proxied `tools/call` (the card's **Mark given** button).
+- **Simulated Alexa+ experience** (per the official FAQ): the web app and its Alexa+ companion agent are *real MCP clients*. They send `initialize`, `tools/list` and `tools/call` over Streamable HTTP, and every JSON-RPC message is visible in the **Developer → Traffic** workspace.
+
+## The caregiver app
+
+The web app is a caregiver command center built entirely on Tend's MCP tools. The page itself is an MCP client acting as the selected caregiver, so the server enforces every permission and safety rule.
+
+- **Today:** a plain-language summary of the day; *Needs attention* cards for missed or due doses, low supply and pending confirmations, each with its real action; a per-person **day timeline** (dose markers, a now line, past shading) with an actionable dose list; a 7-day **adherence heatmap** (every scheduled dose, icon + color) with adherence rings; a **supply runway**; and the care-circle activity feed.
+- **People:** a profile per care recipient with 7-day adherence, today's progress, next dose, medications (schedule, supply, refills, pharmacy), dose history and a notes timeline. *Add note* and *Add medication* forms call `add_care_note` and `add_medication`.
+- **Supply:** runway bars against the 7-day refill point, the **two-step refill** dialog (the server's summary, then confirm or cancel, then the drafted pharmacy message), pickups, and prescriptions with no refills left.
+- **Handoff:** a printable report (3/7/14 days) with adherence by medication, dose grid, missed doses, notes, supply and activity. *Print or save PDF* uses a dedicated print stylesheet.
+- **Alexa+ companion:** docked on desktop, a bottom sheet on mobile. It handles voice or text, renders MCP Apps cards inline, offers suggestions from live household state, and refreshes the dashboard after every turn.
+- **Developer workspace** (kept out of the caregiver flow): protocol overview, a tool catalog with annotations and schemas, an inspector, filterable JSON-RPC traffic with latency, and assistant turn traces.
+- **Live sync:** the app polls every 20 s and announces changes made by other caregivers. If a stale screen tries to log a dose someone else already gave, the server's double-dose guard opens a confirmation dialog naming who gave it and when.
 
 ## How the AWS Builder mini challenge is met
 
@@ -53,7 +65,7 @@ Details: [docs/AWS_INTEGRATION.md](docs/AWS_INTEGRATION.md).
 
 ```mermaid
 flowchart LR
-  subgraph Browser["Web Alexa+ simulator (web/)"]
+  subgraph Browser["Caregiver web app + Alexa+ companion (web/)"]
     UI["Device UI<br/>voice in (Web Speech) / TTS out"]
     Host["MCP Apps host<br/>sandbox proxy → ui://tend/care-board"]
     Insp["Inspector + Care feed<br/>(browser MCP client)"]
@@ -96,7 +108,7 @@ Tap the ring and speak, or use the suggestion chips. Try this sequence:
 1. "Did Mom take her pills today?"
 2. "When will we run out of anything?"
 3. "Reorder Mom's metformin" → "Yes, go ahead"
-4. Switch **Speaking as** to Arjun → "I just gave Mom her metformin" (the double-dose guard fires if it was already logged)
+4. Open a second browser window (or a private window), switch the caregiver menu to **Arjun**, and press *Mark given* on a dose Priya just gave in the first window: the double-dose guard stops it and names Priya
 5. "Note that Dad felt dizzy after lunch" → "Give me the handoff for this week"
 6. Switch to Nurse Maria → try to log a dose (it's refused; view-only)
 
@@ -171,9 +183,9 @@ All settings are environment variables; see [`.env.example`](.env.example).
 ## Scripts
 
 ```bash
-npm start              # server + simulator
+npm start              # server + caregiver app
 npm run dev            # same, restarts on file changes
-npm test               # 42 automated tests (node:test)
+npm test               # 47 automated tests (node:test)
 npm run typecheck      # tsc --noEmit (strict)
 npm run check          # both
 npm run seed           # reset the local DB to the demo household
@@ -188,6 +200,8 @@ npm run guardrail:create
 - **Domain** (`test/care.test.ts`, `test/time.test.ts`): slot matching (incl. 00:30 → yesterday's 20:00), the double-dose guard, stock math, status classification at fixed clock times, forecast, two-phase confirm/expiry/cancel, handoff adherence, name resolution, and DST/half-hour-offset timezones.
 - **MCP e2e** (`test/mcp.e2e.test.ts`): protocol `2025-11-25` negotiation with the official SDK client, role-scoped `tools/list`, output schemas, `isError` vs JSON-RPC errors, the MCP Apps resource MIME type, 401 + `WWW-Authenticate`, Origin/Host (DNS rebinding) rejection, 405 on GET, session tokens.
 - **Agent** (`test/agent.test.ts`): wire order `initialize → notifications/initialized → tools/list → tools/call`, the refill flow across turns, a cross-caregiver double dose, the viewer refusal, and the **Bedrock Converse loop with a scripted mock client**. That includes a model trying to self-confirm a refill in the same turn, which the host policy blocks, and guardrail `guardContent` scoping.
+
+- **Web app** (`test/web.test.ts`): strict CSP and same-origin assets only, the full ES-module import graph and WOFF2 fonts resolve, the MCP Apps sandbox proxy forbids network access, and the handoff report's per-day dose grid is schema-validated over MCP.
 
 Bedrock is mocked in automated tests. Live Bedrock is verified with `npm run smoke:bedrock` and manual runs (see [docs/FRICTION_LOG.md](docs/FRICTION_LOG.md) for what was observed).
 
@@ -218,7 +232,9 @@ src/
   agent/    agent.ts (host + policy) · mcpClient.ts · bedrock.ts · offline.ts
   http/     app.ts (Express, /mcp, /api) · auth.ts
   index.ts  seed.ts  config.ts
-web/        index.html · app.js (simulator + MCP Apps host) · mcp-browser.js · sandbox-proxy.html · styles.css
+web/        index.html · styles.css (design system) · mcp-browser.js · sandbox-proxy.html · fonts/ (OFL)
+  js/       app.js (shell, router, live sync) · api.js (MCP data layer) · actions.js · charts.js (SVG/grid visuals)
+            assistant.js (Alexa+ companion + MCP Apps host) · ui.js · views/{today,people,supply,handoff,developer}.js
 test/       node:test suites + real-server harness
 scripts/    seed · bedrock-smoke · create-guardrail
 docs/       ARCHITECTURE · AWS_INTEGRATION · PRODUCT_FEEDBACK · FRICTION_LOG · DEMO_SCRIPT · SUBMISSION_CHECKLIST
@@ -231,3 +247,5 @@ Tend is not a medical device and doesn't provide medical advice. It's an unoffic
 ## License
 
 [MIT](LICENSE)
+
+Fonts in `web/fonts/` (Newsreader, Instrument Sans, JetBrains Mono) are licensed under the SIL Open Font License 1.1; their license texts are included alongside them.

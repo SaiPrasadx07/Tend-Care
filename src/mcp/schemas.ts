@@ -152,6 +152,14 @@ export const handoffOutput = {
           skipped: z.number(),
           missed: z.number(),
           adherencePct: z.number().nullable(),
+          medicationId: z.string(),
+          times: z.array(z.string()),
+          daily: z.array(
+            z.object({
+              date: z.string(),
+              slots: z.array(z.object({ time: z.string(), state: z.enum(["taken", "skipped", "missed", "due", "upcoming", "untracked"]) })),
+            }),
+          ),
         }),
       ),
       missedDoses: z.array(z.object({ medication: z.string(), date: z.string(), time: z.string() })),

@@ -70,6 +70,9 @@ export function seedDemo(care: CareService, opts: { reset?: boolean; now?: Date 
     store.db.prepare("UPDATE medications SET quantity_on_hand = ? WHERE id = ?").run(m.finalStock, med.id);
   }
 
+  // Setup happened when the household was created, not at seed time.
+  store.db.prepare("UPDATE activity SET at = ? WHERE kind IN ('person_added', 'medication_added')").run(createdAt);
+
   care.addNote(
     { person: "Ravi", text: "Dad felt dizzy after standing up quickly this morning.", category: "symptom" },
     ARJUN,

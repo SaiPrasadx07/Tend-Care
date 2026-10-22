@@ -125,6 +125,10 @@ export interface AdherenceLine {
   skipped: number;
   missed: number;
   adherencePct: number | null;
+  medicationId: string;
+  times: string[];
+  /** One entry per day in the window, oldest first: the state of each scheduled slot ("untracked" before the medication was added). */
+  daily: { date: string; slots: { time: string; state: SlotState | "untracked" }[] }[];
 }
 
 export interface HandoffPerson {
@@ -678,11 +682,17 @@ export class CareService {
       let totTaken = 0;
       for (const row of meds) {
         const med = this.view(row, p.name);
-        const line: AdherenceLine = { medication: med.label, scheduled: 0, taken: 0, skipped: 0, missed: 0, adherencePct: null };
+        const line: AdherenceLine = {
+          medication: med.label, scheduled: 0, taken: 0, skipped: 0, missed: 0, adherencePct: null,
+          medicationId: med.id, times: med.times, daily: [],
+        };
         for (let i = 0; i <= daysBetween(fromDate, today); i++) {
           const date = addDays(fromDate, i);
+          const day: AdherenceLine["daily"][number] = { date, slots: [] };
+          line.daily.push(day);
           for (const time of med.times) {
             const s = this.slotState(med, date, time, row.created_at, now);
+            day.slots.push({ time, state: s ? s.state : "untracked" });
             if (!s || s.state === "due" || s.state === "upcoming") continue;
             line.scheduled++;
             if (s.state === "taken") line.taken++;

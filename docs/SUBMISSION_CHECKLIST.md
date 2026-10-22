@@ -37,7 +37,7 @@ Source: official Rules (sections 4, Submission Requirements, 6) and the FAQ, bot
 ## Video (public YouTube or Vimeo)
 
 - [ ] Under 3:00
-- [ ] Shows the project functioning (simulator + MCP traffic + Bedrock badge)
+- [ ] Shows the project functioning (caregiver app + Alexa+ companion + Developer trace + Bedrock badge)
 - [ ] No third-party trademarks or copyrighted music without permission (no Amazon logos; fictional pharmacies)
 - [ ] Uploaded as publicly visible; link pasted in the form
 - [ ] English (or English subtitles)

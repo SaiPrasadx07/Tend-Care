@@ -186,3 +186,21 @@ test("add_medication validates schedule and duplicates", () => {
   const m = care.addMedication({ person: "Mom", name: "Aspirin", times: ["09:00", "09:00"], quantityOnHand: 5 }, PRIYA);
   assert.deepEqual(m.times, ["09:00"]);
 });
+
+test("handoff report includes a per-day slot grid for adherence visualisation", () => {
+  const { care, clock } = setup("08:05");
+  care.logDose({ medication: "metformin", person: "Mom" }, PRIYA); // today 08:00 taken
+  clock.set("2026-10-21", "12:00");
+  const r = care.handoffReport({ days: 5 });
+  const met = r.people.find((p) => p.name === "Lakshmi")!.adherence[0]!;
+  assert.deepEqual(met.times, ["08:00", "20:00"]);
+  assert.equal(met.daily.length, 5);
+  assert.deepEqual(met.daily.map((d) => d.date), ["2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21"]);
+  // Medication was added 3 days before "now" (10/18 12:00): earlier slots are untracked, later ones count.
+  assert.deepEqual(met.daily[0]!.slots.map((s) => s.state), ["untracked", "untracked"]);
+  assert.deepEqual(met.daily[1]!.slots.map((s) => s.state), ["untracked", "missed"]);
+  assert.deepEqual(met.daily[4]!.slots, [{ time: "08:00", state: "taken" }, { time: "20:00", state: "upcoming" }]);
+  // Grid and aggregates agree.
+  const missedInGrid = met.daily.flatMap((d) => d.slots).filter((s) => s.state === "missed").length;
+  assert.equal(missedInGrid, met.missed);
+});

@@ -10,10 +10,12 @@ export class BrowserMcpClient {
     this.onWire = onWire || (() => {});
     this.nextId = 1;
     this.initialized = null;
+    this.initPromise = null;
   }
 
-  async post(message) {
-    this.onWire({ direction: "client→server", message });
+  async post(message, source) {
+    const started = performance.now();
+    this.onWire({ direction: "client→server", message, source });
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
@@ -21,9 +23,10 @@ export class BrowserMcpClient {
     };
     if (this.initialized) headers["MCP-Protocol-Version"] = this.initialized.protocolVersion;
     const res = await fetch(this.url, { method: "POST", headers, body: JSON.stringify(message) });
+    const ms = Math.round(performance.now() - started);
     if (res.status === 202) {
       await res.text().catch(() => "");
-      this.onWire({ direction: "server→client", httpStatus: 202, message: "(202 Accepted)" });
+      this.onWire({ direction: "server→client", httpStatus: 202, message: "(202 Accepted)", source, ms });
       return undefined;
     }
     const ct = res.headers.get("content-type") || "";
@@ -39,14 +42,14 @@ export class BrowserMcpClient {
     } else {
       body = await res.json().catch(() => ({ error: { code: res.status, message: res.statusText } }));
     }
-    this.onWire({ direction: "server→client", httpStatus: res.status, message: body });
+    this.onWire({ direction: "server→client", httpStatus: res.status, message: body, source, ms });
     if (!res.ok && !body?.error) throw new Error(`HTTP ${res.status}`);
     return body;
   }
 
-  async request(method, params) {
-    if (!this.initialized && method !== "initialize") await this.initialize();
-    const body = await this.post({ jsonrpc: "2.0", id: this.nextId++, method, ...(params ? { params } : {}) });
+  async request(method, params, source = "dashboard") {
+    if (method !== "initialize") await this.initialize(source);
+    const body = await this.post({ jsonrpc: "2.0", id: this.nextId++, method, ...(params ? { params } : {}) }, source);
     if (body?.error) {
       const err = new Error(body.error.message || "MCP error");
       err.code = body.error.code;
@@ -55,36 +58,42 @@ export class BrowserMcpClient {
     return body?.result;
   }
 
-  async initialize() {
-    const result = await this.post({
-      jsonrpc: "2.0",
-      id: this.nextId++,
-      method: "initialize",
-      params: {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } },
-        clientInfo: { name: "tend-browser-inspector", version: "0.1.0" },
-      },
-    });
-    if (result?.error) throw new Error(result.error.message);
-    this.initialized = result.result;
-    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" });
-    return this.initialized;
+  /** Runs the initialize handshake once; concurrent callers share the same promise. */
+  initialize(source = "dashboard") {
+    if (this.initialized) return Promise.resolve(this.initialized);
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        const result = await this.post({
+          jsonrpc: "2.0",
+          id: this.nextId++,
+          method: "initialize",
+          params: {
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } },
+            clientInfo: { name: "tend-web", version: "0.2.0" },
+          },
+        }, source);
+        if (result?.error) throw new Error(result.error.message);
+        this.initialized = result.result;
+        await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, source);
+        return this.initialized;
+      })().catch((err) => {
+        this.initPromise = null;
+        throw err;
+      });
+    }
+    return this.initPromise;
   }
 
-  reset() {
-    this.initialized = null;
+  listTools(source) {
+    return this.request("tools/list", undefined, source);
   }
 
-  listTools() {
-    return this.request("tools/list");
+  callTool(name, args, source) {
+    return this.request("tools/call", { name, arguments: args || {} }, source);
   }
 
-  callTool(name, args) {
-    return this.request("tools/call", { name, arguments: args || {} });
-  }
-
-  readResource(uri) {
-    return this.request("resources/read", { uri });
+  readResource(uri, source) {
+    return this.request("resources/read", { uri }, source);
   }
 }
