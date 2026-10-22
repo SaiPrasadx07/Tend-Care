@@ -39,6 +39,8 @@ export type Intent =
   | "advice"
   | "followup"
   | "overview"
+  | "self_feeling"
+  | "observation"
   | "unknown";
 
 export interface Entities {
@@ -58,6 +60,8 @@ export interface Entities {
   /** "probably", "I think", "might have": the user isn't sure something happened. */
   hedged: boolean;
   question: boolean;
+  /** Words that suggest the speaker may be at risk of harming themselves. */
+  crisis: boolean;
 }
 
 export interface Understanding {
@@ -169,14 +173,21 @@ export function extractEntities(text: string, household: HouseholdPerson[]): Ent
     quantity: qty ? Number(qty[1]) : undefined,
     hedged: /\b(probably|maybe|might have|may have|i think|i guess|not sure|should have|supposed to)\b/.test(t),
     question: QUESTION.test(t) || t.endsWith("?"),
+    crisis: CRISIS.test(t),
   };
 }
 
+/** How someone is: symptoms and wellbeing observations (about a care recipient or the speaker). */
+export const SYMPTOM = /\b(felt|feeling|feels|feel|seems|seemed|looks|looked|complain(ed|ing|s)?|dizzy|tired|exhausted|pain|ache|aches|aching|headache|migraine|nause\w*|vomit\w*|threw up|fever|cough\w*|cold|flu|sick|unwell|ill|fell|fall|confused|sleepy|drowsy|weak|breathless|short of breath|rash|swollen|swelling|sore|depressed|anxious|sad|low|down|upset|agitated|stressed|overwhelmed|worried|lonely|scared|frustrated|struggling|can't sleep|couldn't sleep|insomnia|not (eating|sleeping)|off (her|his|their) food)\b/;
+/** The speaker talking about themselves ("I am feeling depressed"), not about the person they care for. */
+const FIRST_PERSON = /^(honestly,? |to be honest,? |tbh,? |just )?(i|i'm|im|i am|i've|ive|i have|i feel|i've been|i was|i get|i keep|me|my)\b/;
+const REPORTING = /^i (think|noticed|notice|saw|feel like|reckon|guess|just noticed|found)\b/;
+const CRISIS = /\b(kill (myself|me)|suicid\w*|end (it all|my life|things)|hurt(ing)? myself|self[- ]harm|don't want to (live|be here|go on)|no reason to live|better off without me)\b/;
 const QUESTION = /^(did|has|have|what|what's|when|is|are|how|who|which|can|could|do|does|will|should|tell me|show me|any)\b/;
 const MED_WORDS = /\b(medicine|medicines|medication|medications|meds|pills|tablets|drugs|prescriptions?)\b/;
 
 const GREETING = /^(hi|hello|hey|hiya|good (morning|afternoon|evening))\b[,.!\s]*/;
-const OVERVIEW = /\b(how (are|is|'s|s) (\w+'?s? )?(medicines?|meds|medications?|pills|tablets|doing|looking|getting on|holding up)|how (are|is) (things|everything|everyone|it going)|how's (everything|everyone|it going|things)|(is|are) (\w+ )?(okay|ok|alright|all right|fine)\b|anything (i should know|to worry about|wrong|urgent|important)|any (problems|concerns|issues|worries)|overview|status update|where are we|give me an update|update me)/;
+const OVERVIEW = /\b(how (are|is|'s|s) (\w+'?s? )?(medicines?|meds|medications?|pills|tablets|doing|looking|getting on|holding up)|how (are|is) (things|everything|everyone|it going)|how's (everything|everyone|it going|things)|(is|are) (\w+ )?(okay|ok|alright|all right|fine)\b|(is|are) \w+ (feeling|doing) (okay|ok|alright|all right|fine|well)\b|anything (i should know|to worry about|wrong|urgent|important)|any (problems|concerns|issues|worries)|overview|status update|where are we|give me an update|update me)/;
 
 export function classify(text: string, household: HouseholdPerson[]): Understanding {
   let t = normalize(text);
@@ -201,13 +212,19 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   else if (short && has(/^(hi|hello|hey|good (morning|afternoon|evening))\b/)) intent = "greeting";
   else if (short && has(/\b(thanks|thank you|cheers)\b/)) intent = "thanks";
   else if (has(/\b(what can you do|help me|how does this work|what do you do)\b/) || t === "help") intent = "help";
+  // The caregiver's own feelings are never a care-recipient note. A named person
+  // ("I'm worried about Mom") makes it about them; a symptom about them is an observation.
+  // "I'm worried about Mom" is still the caregiver's own feeling; "I think Dad has a fever" reports on Dad.
+  else if (e.crisis || (FIRST_PERSON.test(t) && !REPORTING.test(t) && has(SYMPTOM) &&!has(/\b(note|took|gave|given|skipped|refill)\b/))) intent = "self_feeling";
   else if (has(/^(what about|how about|and( what about)?|what of)\b/) || (short && t.startsWith("and "))) intent = "followup";
   else if (has(/\b(add a note|make a note|take a note|note that|remember that|write down)\b/)) intent = "note";
   else if (has(/\b(refill|reorder|re-order|order more|request more|get more)\b/) && !has(/\b(when|how long|status|left|need a refill\?)\b/) && !e.question) intent = "refill_request";
   else if (has(/\b(picked up|pick(ed)? up|collected|got (the |a )?(refill|new bottle|\d))/) && e.quantity) intent = "pickup";
   else if (has(/\b(skip|skipped|refused|didn't take|did not take|won't take|wouldn't take)\b/) && !e.question) intent = "log_skipped";
   else if (has(/\b(took|taken|take[sn]? (it|them)|gave|given|had (her|his|their|the)|swallowed|finished)\b/) && !e.question) intent = "log_taken";
-  else if (has(/\b(felt|feeling|feels|seems|seemed|complained|dizzy|tired|pain|nause|fever|cough|appointment|fell|confused|sleepy)\b/) && !e.question) intent = "note";
+  else if (has(/\bappointment\b/) && !e.question) intent = "note";
+  else if (has(SYMPTOM) && !e.question && !FIRST_PERSON.test(t)) intent = "observation";
+  else if (has(SYMPTOM) && !e.question && (e.people.length || e.pronoun)) intent = "observation";
   else if (has(/\b(handoff|hand off|hand over|summary|summarize|report|recap|catch me up|this week|past week|last week|how has .* been|how was .* week)\b/)) intent = "handoff";
   else if (has(OVERVIEW) && e.meds.length === 0 && !has(/\b(run out|running (out|low)|supply|stock|refill)\b/)) intent = "overview";
   else if (has(/\b(run out|running out|running low|supply|supplies|stock|how many .* left|days left|left in the bottle|need (a )?refill|refills?)\b/)) intent = "supply";

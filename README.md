@@ -58,6 +58,8 @@ Every turn: the browser posts the utterance → the host agent opens a real MCP 
 - greets briefly ("Hey Priya. What can I help you with today?") and lists what it can do only when asked, or after two turns it couldn't follow;
 - answers with the **short answer first**: "Did Dad take his pills?" → "Partly. His 6:30 AM Levothyroxine was logged as given at 6:47 AM by Priya. The 9 AM Amlodipine hasn't been logged, so I can't confirm he took it." It never infers a dose from the schedule;
 - handles check-ins ("How are Mum's medicines looking?": today's doses, anything not logged, and urgent supply), "what's left today", and **other days** ("What about tomorrow?" reads the schedule for that date; "yesterday" reads what was recorded). It won't log a dose against today when the caregiver says it was yesterday;
+- tells the caregiver's own feelings apart from observations about the person they care for. "I am feeling depressed" gets a short, supportive reply and is **never** saved as a note; crisis language gets emergency guidance (988 in the US). "Dad is having a migraine" asks *"Should I add 'Dad is having a migraine' to his notes?"* and saves only after a yes, and only reports it as saved once the server confirms;
+- labels every reply with the engine that actually produced it ("Offline router · no LLM" or "Bedrock · <model>"), because a Bedrock setup can fall back to the offline router for a single turn;
 - recognises everyday variants of family words ("Mum" for a person filed as "Mom") and uses them back;
 - asks a **short clarifying question** for vague requests ("I want to know about the medicine" → "…today, or a particular medicine?") instead of dumping the household's status;
 - answers clear questions **directly and narrowly**, using the fewest tool calls (one person's day, one medicine's schedule + supply);
@@ -209,7 +211,7 @@ All settings are environment variables; see [`.env.example`](.env.example).
 ```bash
 npm start              # server + caregiver app
 npm run dev            # same, restarts on file changes
-npm test               # 99 automated tests (node:test)
+npm test               # 111 automated tests (node:test)
 npm run typecheck      # tsc --noEmit (strict)
 npm run check          # both
 npm run seed           # reset the local DB to the demo household

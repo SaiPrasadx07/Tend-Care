@@ -960,3 +960,7 @@ body.entering .rail:not([hidden]) { animation: app-in-side 640ms var(--ease-out)
 }
 /* Focus rings that read on the dark surfaces (Alexa panel, startup screen). */
 .rail :focus-visible, .splash :focus-visible, .rail-toggle:focus-visible { outline: 2px solid #9fd8d1; outline-offset: 3px; }
+
+/* the engine that produced each reply */
+.turn-meta .source { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; font-weight: 600; padding: 2px 7px; border-radius: 999px; border: 1px solid rgba(246, 241, 231, .18); color: rgba(246, 241, 231, .6); }
+.turn-meta .source.llm { border-color: rgba(143, 220, 201, .45); color: #8fdcc9; }

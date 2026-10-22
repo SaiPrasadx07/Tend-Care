@@ -5,7 +5,7 @@
 // MCP tool results. Every read and write is a real MCP tools/call, so the
 // server's permission and safety rules still apply.
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { AFFIRMATIVE, NEGATIVE, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
+import { AFFIRMATIVE, NEGATIVE, SYMPTOM, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
 
 export { AFFIRMATIVE, NEGATIVE, parseSlotTime } from "./intent.ts";
 
@@ -13,7 +13,9 @@ type Pending =
   | { type: "refill_confirm"; actionId: string; person: string; med: string }
   | { type: "duplicate"; args: Record<string, unknown>; person: string; med: string }
   | { type: "confirm_log"; args: Record<string, unknown>; person: string; med: string; status: "taken" | "skipped" }
-  | { type: "which_person"; intent: Understanding["intent"]; entities: Entities; candidates: string[] }
+  | { type: "which_person"; intent: Understanding["intent"]; entities: Entities; candidates: string[]; text: string }
+  | { type: "confirm_note"; person: string; text: string; category: string }
+  | { type: "offer_checkin"; person?: string }
   | { type: "vague" }
   | { type: "which_med"; person?: string; intent: Understanding["intent"] }
   | { type: "offer_refill"; person: string; med: string }
@@ -124,6 +126,8 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
   }
   const household = session.household;
   const u = classify(text, household);
+  /** The utterance a write is about. After "Is that for Mom or Dad?" it's the original request, not "Dad". */
+  let sourceText = text;
   const e = u.entities;
   for (const p of e.people.slice(0, 1)) if (e.personWord) session.words[p] = e.personWord;
 
@@ -462,9 +466,68 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
   }
 
   const askWho = (intent: Understanding["intent"], candidates: string[], what: string): OfflineReply => {
-    session.pending = { type: "which_person", intent, entities: e, candidates };
+    session.pending = { type: "which_person", intent, entities: e, candidates, text: sourceText };
     return { reply: `Is that ${what} for ${orList(candidates.map((c) => session.words[c] ?? household.find((h) => h.name === c)?.aliases[0] ?? c))}?` };
   };
+
+  function noteCategory(t: string): string {
+    if (/\bappointment\b/i.test(t)) return "appointment";
+    return SYMPTOM.test(t.toLowerCase()) ? "symptom" : "observation";
+  }
+
+  /**
+   * The caregiver talking about themselves. Never written to the care record and
+   * never attributed to a care recipient; no tools are called.
+   */
+  function selfFeeling(): OfflineReply {
+    if (e.crisis) {
+      return {
+        reply: "I'm really glad you told me, and I'm sorry you're carrying this. I can't help in an emergency, so if you might hurt yourself, please call your local emergency number now, or in the US call or text 988 to reach the Suicide & Crisis Lifeline. If you can, reach out to someone you trust right now too.",
+      };
+    }
+    const n = u.normalized;
+    const about = e.people[0];
+    const heavy = /\b(depressed|hopeless|can't cope|cannot cope|struggling|not okay|lonely|scared)\b/.test(n);
+    const tired = /\b(tired|exhausted|overwhelmed|stressed|burnt out|burned out|busy|frazzled)\b/.test(n);
+    const sorry = pick(["I'm sorry you're feeling that way.", "That sounds really hard.", "Thank you for telling me. That sounds like a lot."]);
+    if (about) {
+      session.pending = { type: "offer_checkin", person: about };
+      return { reply: `That's understandable. Caring for ${ref(about)} takes a lot. Would it help if I checked how ${pron(about) === "their" ? `${poss(about)}` : pron(about)} day is going?` };
+    }
+    if (heavy) {
+      return { reply: `${sorry} Looking after family can take a real toll, and how you're doing matters too. If it's been weighing on you for a while, it may help to talk with someone you trust or your own doctor. I haven't added anything to the care record.` };
+    }
+    if (tired) {
+      session.pending = { type: "offer_checkin" };
+      return { reply: `${sorry} Caregiving is a lot to carry. I haven't added anything to the care record. Want me to tell you what's still left today, so you know what can wait?` };
+    }
+    return { reply: `${sorry} I'm here if you want to talk it through, and I haven't added anything to the care record.` };
+  }
+
+  /**
+   * Someone in the care circle seems unwell or different. Observations are only
+   * saved after the caregiver says yes, and only reported as saved once the server confirms.
+   */
+  function observation(): OfflineReply {
+    const person = e.people[0] ?? (e.pronoun ? session.person : undefined) ?? (household.length === 1 ? household[0]!.name : undefined);
+    if (!person) {
+      const symptom = /\b(migraine|headache|fever|cough|rash|pain|nause\w*|dizz\w*)\b/.exec(u.normalized)?.[0];
+      session.pending = { type: "which_person", intent: "observation", entities: e, candidates: household.map((p) => p.name), text: sourceText };
+      return { reply: `Who ${symptom ? `has the ${symptom}` : "is that about"}, ${orList(everyoneWords())}?` };
+    }
+    session.person = person;
+    // Keep the caregiver's own words, minus filler like "as well".
+    const clean = sourceText.replace(/^\s*(hey |ok )?alexa[,.!\s]*/i, "").replace(/[,\s]+(as well|too|also)\s*([.!?]*)$/i, "$2").replace(/[.!?\s]+$/, "").trim();
+    // A note is read later without this conversation, so "She has a headache" is saved as "Mom has a headache".
+    const named = clean.replace(/^(she|he)\b/i, ref(person));
+    const quoted = named.charAt(0).toUpperCase() + named.slice(1);
+    session.pending = { type: "confirm_note", person, text: quoted, category: noteCategory(sourceText) };
+    const urgent = /\b(fell|fall|chest pain|can't breathe|cannot breathe|short of breath|breathless|unconscious|passed out|fainted|slurr\w*|stroke)\b/.test(u.normalized)
+      ? ` If this feels like an emergency, call your local emergency number first.`
+      : "";
+    const empathy = pick([`Sorry to hear that about ${ref(person)}.`, `Oh no, poor ${ref(person)}.`, `Thanks for letting me know about ${ref(person)}.`]);
+    return { reply: `${empathy}${urgent} Should I add “${quoted}” to ${theirs(person)} notes so the care circle knows?` };
+  }
 
   function helpText(): string {
     return `I keep the care circle's record of ${listJoin(everyoneWords())}'s medicines. You can ask what's due or what's left today, tell me a dose was given or skipped, check supply and refills, add a note, or ask for a handoff. For example: “${example()}”`;
@@ -569,13 +632,17 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       case "note": {
         const who = e.people.length === 1 ? { person: e.people[0], candidates: [] as string[] } : resolveForWrite(undefined);
         if (!who.person) return askWho(intent, who.candidates, "note");
-        const noteText = text.replace(/^\s*(alexa[,\s]+)?(please\s+)?(add a |make a |take a )?note( that| for \w+)?[:,]?\s*/i, "").replace(/^remember that\s*/i, "").trim();
-        const category = /\bappointment\b/i.test(text) ? "appointment" : /\b(dizzy|pain|nause|tired|fever|cough|felt|feeling|fell|confused|sleepy)\b/i.test(text) ? "symptom" : "observation";
-        const r = await call("add_care_note", { person: who.person, text: noteText || text, category });
+        const noteText = sourceText.replace(/^\s*(alexa[,\s]+)?(please\s+)?(add a |make a |take a )?note( that| for \w+)?[:,]?\s*/i, "").replace(/^remember that\s*/i, "").trim();
+        const category = noteCategory(sourceText);
+        const r = await call("add_care_note", { person: who.person, text: noteText || sourceText, category });
         if (r.isError) return { reply: errorText(r) };
         session.person = who.person;
         return { reply: `Noted for ${ref(who.person)}. The care circle will see it in the next handoff.` };
       }
+      case "self_feeling":
+        return selfFeeling();
+      case "observation":
+        return observation();
       case "followup": {
         const target = e.people[0] ?? session.person;
         const last = session.lastIntent;
@@ -656,6 +723,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       case "which_person": {
         const chosen = e.people.find((p) => pending.candidates.includes(p));
         if (chosen) {
+          sourceText = pending.text;
           // Re-run the original request with the person now explicit.
           e.people = [chosen, ...e.people.filter((p) => p !== chosen)];
           Object.assign(e, { meds: pending.entities.meds, slotTime: pending.entities.slotTime ?? e.slotTime, quantity: pending.entities.quantity ?? e.quantity, hedged: pending.entities.hedged, timeScope: pending.entities.timeScope ?? e.timeScope });
@@ -668,6 +736,19 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
         if (u.intent === "deny") return { reply: "Okay, I'll leave it." };
         break;
       }
+      case "confirm_note":
+        if (u.intent === "affirm") {
+          const r = await call("add_care_note", { person: pending.person, text: pending.text, category: pending.category });
+          if (r.isError) return { reply: `I couldn't save that note. ${errorText(r)}` };
+          session.person = pending.person;
+          return { reply: `Added to ${poss(pending.person)} notes. The care circle will see it in the next handoff.` };
+        }
+        if (u.intent === "deny") return { reply: "Okay, I haven't saved it." };
+        break;
+      case "offer_checkin":
+        if (u.intent === "affirm") return pending.person ? overview(pending.person) : status(undefined, undefined, "remaining");
+        if (u.intent === "deny") return { reply: pick(["Okay. I'm here whenever you need me.", "No problem. Take care of yourself too."]) };
+        break;
       case "vague":
         if (e.meds.length) return intentWithMed("med_info", e.people[0], e.meds[0]!.name);
         if (/\b(particular|specific|one|a medicine|certain)\b/.test(u.normalized)) {

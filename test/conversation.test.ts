@@ -57,6 +57,13 @@ describe("intent understanding", () => {
     ["How are Mum's medicines looking?", "overview"],
     ["Is Dad okay?", "overview"],
     ["What does Mom have tomorrow?", "status"],
+    ["I am feeling depressed", "self_feeling"],
+    ["I feel so tired", "self_feeling"],
+    ["I am worried about Mom", "self_feeling"],
+    ["Dad is having a migraine as well", "observation"],
+    ["I think Dad has a fever", "observation"],
+    ["Dad felt dizzy after lunch", "observation"],
+    ["Is Mom feeling okay?", "overview"],
   ];
   for (const [text, intent] of cases) {
     test(`"${text}" → ${intent}`, () => assert.equal(classify(text, HOUSEHOLD).intent, intent));
@@ -302,6 +309,91 @@ describe("conversation over MCP (offline engine)", () => {
       const t = await talker(h)("Mom took her metformin yesterday");
       assert.equal(called(t, "log_dose").length, 0);
       assert.match(t.reply, /haven't recorded anything/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("regression: 'I am feeling depressed' is the caregiver's feeling, not a note about Mom or Dad", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const t = await say("I am feeling depressed");
+      assert.doesNotMatch(t.reply, /note for|Mom or Dad|\?$/, t.reply);
+      assert.match(t.reply, /haven't added anything to the care record/);
+      assert.deepEqual(t.tools.map((x) => x.name).filter((n) => n !== "list_care_recipients"), [], "no tools, nothing saved");
+      // A bare yes afterwards doesn't save anything either.
+      const yes = await say("yes");
+      assert.equal(called(yes, "add_care_note").length, 0);
+      for (const text of ["I'm so exhausted", "I feel overwhelmed today", "I am worried about Mom"]) {
+        const r = await talker(h)(text);
+        assert.equal(called(r, "add_care_note").length, 0, text);
+        assert.doesNotMatch(r.reply, /note for/, text);
+      }
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("regression: 'Dad is having a migraine as well' asks before saving, and saves only on yes", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      await say("I am feeling depressed");
+      const ask = await say("Dad is having a migraine as well");
+      assert.equal(called(ask, "add_care_note").length, 0, "nothing saved before confirmation");
+      assert.match(ask.reply, /Should I add “Dad is having a migraine” to his notes/);
+      assert.doesNotMatch(ask.reply, /depress/i, "the caregiver's feeling isn't carried onto Dad");
+      const yes = await say("yes");
+      const saved = called(yes, "add_care_note");
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0]!.arguments, { person: "Ravi", text: "Dad is having a migraine", category: "symptom" });
+      assert.match(yes.reply, /^Added to Dad's notes\./);
+      // Declining saves nothing.
+      const say2 = talker(h);
+      await say2("Mom seems confused today");
+      const no = await say2("no");
+      assert.equal(called(no, "add_care_note").length, 0);
+      assert.equal(no.reply, "Okay, I haven't saved it.");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("an observation with only a pronoun asks who, then names them in the saved note", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const who = await say("She has a headache");
+      assert.equal(who.reply, "Who has the headache, Mom or Dad?");
+      const conf = await say("Mom");
+      assert.equal(called(conf, "add_care_note").length, 0);
+      const yes = await say("yes");
+      assert.equal(called(yes, "add_care_note")[0]?.arguments.text, "Mom has a headache");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("an explicit note keeps the original words after 'for Mom or Dad?'", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      await say("Note that he felt dizzy after lunch");
+      const a = await say("Dad");
+      assert.equal(called(a, "add_care_note")[0]?.arguments.text, "he felt dizzy after lunch");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("crisis language gets safety guidance and nothing is recorded", async () => {
+    const h = await startHarness();
+    try {
+      const t = await talker(h)("I want to end it all");
+      assert.match(t.reply, /emergency number/);
+      assert.match(t.reply, /988/);
+      assert.deepEqual(t.tools.map((x) => x.name).filter((n) => n !== "list_care_recipients"), []);
     } finally {
       await h.close();
     }
