@@ -55,6 +55,10 @@ The web app is a caregiver command center built entirely on Tend's MCP tools. Th
 Every turn: the browser posts the utterance → the host agent opens a real MCP session as that caregiver (`initialize` → `tools/list`) → an **engine** decides which tools to call → each call is a real `tools/call` that passes through the host's confirmation gate and the server's permissions and guards → the reply is returned as display text plus a **spoken form** (units expanded, long drafts left on screen).
 
 **Offline engine (default, no LLM, no AWS).** This is deterministic, not generative, and the UI says so ("Offline router (no LLM)"). `src/agent/intent.ts` classifies intent and extracts entities: people and aliases, medicines, time of day, quantities, hedging and medical-advice questions. `src/agent/offline.ts` is a dialogue manager that:
+- greets briefly ("Hey Priya. What can I help you with today?") and lists what it can do only when asked, or after two turns it couldn't follow;
+- answers with the **short answer first**: "Did Dad take his pills?" → "Partly. His 6:30 AM Levothyroxine was logged as given at 6:47 AM by Priya. The 9 AM Amlodipine hasn't been logged, so I can't confirm he took it." It never infers a dose from the schedule;
+- handles check-ins ("How are Mum's medicines looking?": today's doses, anything not logged, and urgent supply), "what's left today", and **other days** ("What about tomorrow?" reads the schedule for that date; "yesterday" reads what was recorded). It won't log a dose against today when the caregiver says it was yesterday;
+- recognises everyday variants of family words ("Mum" for a person filed as "Mom") and uses them back;
 - asks a **short clarifying question** for vague requests ("I want to know about the medicine" → "…today, or a particular medicine?") instead of dumping the household's status;
 - answers clear questions **directly and narrowly**, using the fewest tool calls (one person's day, one medicine's schedule + supply);
 - keeps **conversation context** for follow-ups ("What about tonight?", "And Dad?") and mirrors the family's words ("Mom");
@@ -67,7 +71,8 @@ Every turn: the browser posts the utterance → the host agent opens a real MCP 
 ## The Alexa+ orb and loading
 
 - **Orb** (`web/js/orb.js`, CSS in `styles.css`): a layered glass sphere (halo, shell, drifting conic core, glint, ripple). Its states come only from real events: *idle*, *listening* (only while speech recognition is running), *thinking* (only while a request is in flight), *speaking* (only after the speech engine fires `onstart`; word boundaries add a brief brightening), *success* (only after a write tool returned success), *error* and *unavailable* (desaturated and still when the care record can't be reached). Every state has an accessible label. Reduced motion stops all orb animation. The orb in the composer is the voice control: tap to talk, tap again to stop, tap while speaking to stop speech.
-- **Splash**: static markup in `index.html` paints before any JavaScript. It stays only while config and the first care-record load are actually in flight, then fades out. There's no minimum duration and no fake progress. If initialization fails, the orb turns to its error state with a plain message and *Try again*.
+- **Startup screen** (`web/js/boot.js`, `web/js/splash.js`): static markup paints before any JavaScript. On the first visit of a browser session, or with `?intro`, a short introduction (about 1.6 s) plays on the forest brand surface while the orb forms. It leaves once both the introduction and the real startup work are done, and a click or key press skips it once Tend is ready. Return visits show nothing unless startup takes more than about 350 ms. After 6 s it says startup is slow and offers *Try again*; after 20 s, or on any error, it switches to a failure state with a plain message and a focused *Try again*. Reduced motion skips the introduction entirely.
+- **Orb ring**: a ring of light circles the sphere. While voice input is active it follows the live microphone level, but only if microphone permission was already granted (so there's never a second prompt); otherwise it uses a CSS ripple. Every orb on the page (composer, empty state, *Ask Alexa+* button) mirrors the assistant's real state.
 
 ## How the AWS Builder mini challenge is met
 
@@ -204,7 +209,7 @@ All settings are environment variables; see [`.env.example`](.env.example).
 ```bash
 npm start              # server + caregiver app
 npm run dev            # same, restarts on file changes
-npm test               # 79 automated tests (node:test)
+npm test               # 99 automated tests (node:test)
 npm run typecheck      # tsc --noEmit (strict)
 npm run check          # both
 npm run seed           # reset the local DB to the demo household
@@ -258,7 +263,7 @@ web/        index.html · styles.css (design system) · mcp-browser.js · sandbo
             assistant.js (Alexa+ companion + MCP Apps host) · ui.js · views/{today,people,supply,handoff,developer}.js
 test/       node:test suites + real-server harness
 scripts/    seed · bedrock-smoke · create-guardrail
-docs/       ARCHITECTURE · AWS_INTEGRATION · PRODUCT_FEEDBACK · FRICTION_LOG · DEMO_SCRIPT · SUBMISSION_CHECKLIST
+docs/       ARCHITECTURE · AWS_INTEGRATION · PRODUCT_FEEDBACK · FRICTION_LOG · DEMO_SCRIPT · SUBMISSION_CHECKLIST · TEE_ASSESSMENT (investigation only; Tend does not run in a TEE)
 ```
 
 ## Disclaimer

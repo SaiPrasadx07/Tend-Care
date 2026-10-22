@@ -15,6 +15,9 @@ export interface HouseholdPerson {
 }
 
 export type TimeScope = "morning" | "afternoon" | "evening" | "now";
+export type Day = "today" | "tomorrow" | "yesterday";
+/** What a status question is really after: what's still to do, or whether doses were given. */
+export type Focus = "remaining" | "taken";
 
 export type Intent =
   | "greeting"
@@ -35,6 +38,7 @@ export type Intent =
   | "activity"
   | "advice"
   | "followup"
+  | "overview"
   | "unknown";
 
 export interface Entities {
@@ -47,6 +51,8 @@ export interface Entities {
   /** Medications named, with every person who takes a medication of that name. */
   meds: { name: string; owners: string[] }[];
   timeScope?: TimeScope;
+  day?: Day;
+  focus?: Focus;
   slotTime?: string;
   quantity?: number;
   /** "probably", "I think", "might have": the user isn't sure something happened. */
@@ -66,11 +72,22 @@ export const NEGATIVE = /^\s*(no|nope|cancel|don't|do not|stop|never ?mind|not n
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const word = (text: string, w: string) => new RegExp(`(^|[^a-z])${escape(w.toLowerCase())}('s)?([^a-z]|$)`).test(text);
 
+/** Everyday variants of the words families use, so "Mum" finds the person filed as "Mom". */
+const ALIAS_VARIANTS: Record<string, string[]> = {
+  mom: ["mum", "mommy", "mummy", "mama", "mother", "ma"],
+  mum: ["mom", "mummy", "mommy", "mother"],
+  dad: ["daddy", "papa", "pa", "father"],
+  amma: ["ammi"],
+  grandma: ["granny", "nana", "nan"],
+  grandpa: ["grandad", "granddad", "gramps"],
+};
+
 export function normalize(text: string): string {
   return text
     .toLowerCase()
     .replace(/[’‘]/g, "'")
-    .replace(/^\s*(hey\s+|ok\s+)?alexa[,\s]+/, "")
+    .replace(/^\s*(hey|hi|hello)\s+alexa\b[,.!\s]*/, "$1 ")
+    .replace(/^\s*(ok\s+)?alexa\b[,.!\s]*/, "")
     .replace(/[^a-z0-9:'.,?!\s-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -96,15 +113,30 @@ function timeScope(t: string): TimeScope | undefined {
   return undefined;
 }
 
+function dayOf(t: string): Day | undefined {
+  if (/\b(tomorrow|tmrw)\b/.test(t)) return "tomorrow";
+  if (/\b(yesterday|last night)\b/.test(t)) return "yesterday";
+  if (/\b(today|tonight|this (morning|afternoon|evening))\b/.test(t)) return "today";
+  return undefined;
+}
+
+function focusOf(t: string): Focus | undefined {
+  if (/\b(left|remaining|still (to|need|needs|has|have)|what's next|whats next|next dose|coming up|to go)\b/.test(t)) return "remaining";
+  if (/^(did|has|have)\b.*\b(take|taken|had|get|got|given)\b/.test(t) || /\b(been given|been taken)\b/.test(t)) return "taken";
+  return undefined;
+}
+
 export function extractEntities(text: string, household: HouseholdPerson[]): Entities {
   const t = normalize(text);
   const people: { name: string; at: number; word: string }[] = [];
   for (const p of household) {
-    for (const w of [p.name, ...p.aliases]) {
+    const words = [p.name, ...p.aliases, ...p.aliases.flatMap((a) => ALIAS_VARIANTS[a.toLowerCase()] ?? [])];
+    for (const w of words) {
       if (!w) continue;
       const m = new RegExp(`(^|[^a-z])(${escape(w.toLowerCase())})('s)?([^a-z]|$)`).exec(t);
       if (m) {
-        people.push({ name: p.name, at: m.index, word: w });
+        // Keep the word the user actually said ("Mum"), so replies mirror it.
+        people.push({ name: p.name, at: m.index, word: w === p.name || p.aliases.includes(w) ? w : w.charAt(0).toUpperCase() + w.slice(1) });
         break;
       }
     }
@@ -131,18 +163,31 @@ export function extractEntities(text: string, household: HouseholdPerson[]): Ent
     pronoun: people.length === 0 && /\b(she|her|hers|he|him|his|they|them|their)\b/.test(t),
     meds: medList,
     timeScope: timeScope(t),
+    day: dayOf(t),
+    focus: focusOf(t),
     slotTime: parseSlotTime(t),
     quantity: qty ? Number(qty[1]) : undefined,
     hedged: /\b(probably|maybe|might have|may have|i think|i guess|not sure|should have|supposed to)\b/.test(t),
-    question: /^(did|has|have|what|what's|when|is|are|how|who|which|can|could|do|does|will|should|tell me|show me|any)\b/.test(t) || t.endsWith("?"),
+    question: QUESTION.test(t) || t.endsWith("?"),
   };
 }
 
+const QUESTION = /^(did|has|have|what|what's|when|is|are|how|who|which|can|could|do|does|will|should|tell me|show me|any)\b/;
 const MED_WORDS = /\b(medicine|medicines|medication|medications|meds|pills|tablets|drugs|prescriptions?)\b/;
 
+const GREETING = /^(hi|hello|hey|hiya|good (morning|afternoon|evening))\b[,.!\s]*/;
+const OVERVIEW = /\b(how (are|is|'s|s) (\w+'?s? )?(medicines?|meds|medications?|pills|tablets|doing|looking|getting on|holding up)|how (are|is) (things|everything|everyone|it going)|how's (everything|everyone|it going|things)|(is|are) (\w+ )?(okay|ok|alright|all right|fine)\b|anything (i should know|to worry about|wrong|urgent|important)|any (problems|concerns|issues|worries)|overview|status update|where are we|give me an update|update me)/;
+
 export function classify(text: string, household: HouseholdPerson[]): Understanding {
-  const t = normalize(text);
+  let t = normalize(text);
   const e = extractEntities(text, household);
+  // "Hi Alexa, did Dad take his pills?" is a question with a greeting in front, not a greeting.
+  const greet = GREETING.exec(t);
+  if (greet && t.slice(greet[0].length).split(" ").filter(Boolean).length >= 2) {
+    t = t.slice(greet[0].length);
+    e.question ||= QUESTION.test(t);
+    e.focus ??= focusOf(t);
+  }
   const has = (re: RegExp) => re.test(t);
   const short = t.split(" ").length <= 4;
 
@@ -164,15 +209,18 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   else if (has(/\b(took|taken|take[sn]? (it|them)|gave|given|had (her|his|their|the)|swallowed|finished)\b/) && !e.question) intent = "log_taken";
   else if (has(/\b(felt|feeling|feels|seems|seemed|complained|dizzy|tired|pain|nause|fever|cough|appointment|fell|confused|sleepy)\b/) && !e.question) intent = "note";
   else if (has(/\b(handoff|hand off|hand over|summary|summarize|report|recap|catch me up|this week|past week|last week|how has .* been|how was .* week)\b/)) intent = "handoff";
+  else if (has(OVERVIEW) && e.meds.length === 0 && !has(/\b(run out|running (out|low)|supply|stock|refill)\b/)) intent = "overview";
   else if (has(/\b(run out|running out|running low|supply|supplies|stock|how many .* left|days left|left in the bottle|need (a )?refill|refills?)\b/)) intent = "supply";
   else if (has(/\b(who (gave|logged|did)|activity|what happened|anything happen|lately|recently)\b/)) intent = "activity";
   else if (e.meds.length > 0 && (e.question || has(/\b(about|tell me|info|information|schedule|when|dose|doses)\b/))) intent = "med_info";
-  else if (has(/\b(did .* take|has .* (taken|had)|due|next dose|what's next|left to take|need(s)? to take|schedule|today|tonight|this morning|this evening|missed|on track|doses?|how is|how's)\b/)) intent = "status";
+  else if (has(/\b(did .* take|has .* (taken|had)|due|next dose|what's next|left to take|need(s)? to take|schedule|today|tonight|this morning|this evening|missed|on track|doses?|how is|how's|tomorrow|yesterday|last night)\b/)) intent = "status";
   else if (MED_WORDS.test(t)) intent = e.people.length || e.pronoun ? "status" : "vague_medication";
   else if (e.meds.length > 0) intent = "med_info";
   else if (e.timeScope && e.people.length === 0) intent = "followup";
   else if (e.people.length > 0 && short) intent = "followup";
 
+  // "How's Mom?" is a general check-in, not a request for one slot.
+  if (intent === "status" && /^how(?: is|'s|s)\b/.test(t) && !e.meds.length && !e.timeScope && !e.day) intent = "overview";
   // A vague medication question is only vague if nothing narrows it down.
   if (intent === "status" && MED_WORDS.test(t) && !e.people.length && !e.pronoun && !e.meds.length && !e.timeScope
     && !has(/\b(did|has|due|next|left|today|tonight|missed|take|taken|schedule)\b/)) {

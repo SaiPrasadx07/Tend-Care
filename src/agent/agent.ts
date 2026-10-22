@@ -130,6 +130,8 @@ export class CareAgent {
       "Answer the question that was actually asked, using the fewest tool calls that answer it. A question about one person or one medicine gets an answer about that person or medicine only; never recite the whole household's status unless asked.",
       "If a request is vague (for example 'I want to know about the medicine'), ask one short clarifying question, such as whether they want today's doses or a particular medicine, instead of dumping information. Clear questions get direct answers.",
       "Use the conversation so far for follow-ups ('what about tonight?', 'and Dad?'). If the referent is unclear, ask. Never carry an assumed person or medicine into a write; resolve it first.",
+      "A greeting gets a short greeting back ('Hey Priya. What can I help you with today?'). Describe what you can do only when asked, and don't repeat the introduction later in the conversation.",
+      "Lead with the short answer ('Partly.', 'Yes.', 'Not yet.'), then the useful detail. A dose counts as given only if it was logged; say 'hasn't been logged, so I can't confirm it was taken' rather than inferring from the schedule. For other days, pass get_care_status a date.",
       "Only record a dose when the caregiver says it was given. If they sound unsure ('probably', 'I think'), ask them to confirm before calling log_dose.",
       "Style: calm and concise. Mirror the family's words ('Mom'). Don't open with 'Of course' or 'Certainly', don't repeat the question back, don't keep using the caregiver's name, and only say an action succeeded when the tool result confirms it.",
       `The speaker is ${actor.name} (${actor.role === "caregiver" ? "a caregiver who can log and change records" : "view-only; cannot change records"}).`,

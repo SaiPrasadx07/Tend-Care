@@ -147,7 +147,8 @@ h2.section-title { font-family: var(--serif); font-weight: 500; font-size: 21px;
 }
 .layout.no-rail { grid-template-columns: minmax(0, 1fr); }
 .content { padding: 32px 40px 80px; min-width: 0; max-width: 1180px; width: 100%; margin: 0 auto; }
-.view { animation: viewIn .35s var(--ease); }
+/* Only real navigation animates; background sync re-renders in place. */
+.view.enter { animation: viewIn .35s var(--ease); }
 @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .viewonly-banner {
@@ -607,11 +608,16 @@ dialog.sheet[open] { animation: dlgIn .22s var(--ease); }
 }
 
 /* =====================================================================
-   Alexa+ orb: layered glass sphere. States come only from real events.
+   Alexa+ orb: Tend's assistant identity. A forest-glass sphere with an
+   aurora core and a single "tending" ring of light that circles it.
+   States come only from real events; --level is the live microphone level
+   and is set only while voice input is actually listening.
    ===================================================================== */
 .orb {
   --orb: 56px;
   --glow: 110, 211, 197;
+  --level: 0;
+  --ring-w: calc(var(--orb) * .03 + 1px);
   --core-a: #9be7d8; --core-b: #3fb39f; --core-c: #e3f5c9; --core-d: #5cc8b8;
   position: relative; display: inline-block; flex: none;
   width: var(--orb); height: var(--orb); border-radius: 50%;
@@ -643,37 +649,61 @@ dialog.sheet[open] { animation: dlgIn .22s var(--ease); }
   background: conic-gradient(from 0deg, var(--core-a), var(--core-b), var(--core-c), var(--core-d), var(--core-a));
   filter: blur(calc(var(--orb) * .08));
   opacity: .72; mix-blend-mode: screen;
+  scale: calc(1 + var(--level) * .22);
   animation: orb-drift 14s linear infinite;
-  transition: opacity var(--dur-3), inset var(--dur-3) var(--ease-out);
+  transition: opacity var(--dur-3), inset var(--dur-3) var(--ease-out), scale 90ms linear;
 }
 .orb-glint {
   width: 26%; height: 18%; left: 22%; top: 15%;
   background: radial-gradient(ellipse, rgba(255, 255, 255, .75), rgba(255, 255, 255, 0) 70%);
   transform: rotate(-24deg);
 }
-.orb-ripple { inset: -2px; border: 2px solid rgba(var(--glow), .0); }
+/* The signature ring: a comet of light on a thin track around the sphere. */
+.orb-ring {
+  inset: calc(-11% - var(--level) * 12%);
+  background: conic-gradient(from 0deg, rgba(var(--glow), 0) 0deg 196deg, rgba(var(--glow), .5) 300deg, rgba(240, 255, 248, .95) 354deg, rgba(var(--glow), 0) 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-w)), #000 calc(100% - var(--ring-w) + .5px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-w)), #000 calc(100% - var(--ring-w) + .5px));
+  opacity: .42;
+  animation: orb-drift 11s linear infinite;
+  transition: opacity var(--dur-3), inset 90ms linear;
+}
+.orb-ring::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; opacity: 0;
+  background: conic-gradient(from 180deg, rgba(var(--glow), 0) 0deg 250deg, rgba(var(--glow), .45) 330deg, rgba(var(--glow), 0) 360deg);
+  -webkit-mask: inherit; mask: inherit;
+  transition: opacity var(--dur-3);
+}
+.orb-ripple { inset: -2px; border: 2px solid rgba(var(--glow), 0); }
 
 @keyframes orb-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.035); } }
 @keyframes orb-halo { 0%, 100% { opacity: .65; transform: scale(.96); } 50% { opacity: 1; transform: scale(1.04); } }
 @keyframes orb-drift { to { transform: rotate(360deg); } }
+@keyframes orb-drift-rev { to { transform: rotate(-360deg); } }
 @keyframes orb-ripple { 0% { transform: scale(1); opacity: .75; } 100% { transform: scale(1.75); opacity: 0; } }
 @keyframes orb-speak { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.06); } 70% { transform: scale(.99); } }
 @keyframes orb-ack { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(1.9); opacity: 0; } }
 
-/* listening: more light, an outward ripple that reads as "I hear you" */
+/* listening: the ring opens up and follows the voice; a ripple when no level meter is available */
 .orb[data-state="listening"] { --breath: 2.2s; }
 .orb[data-state="listening"] .orb-core { opacity: .95; inset: 14%; }
-.orb[data-state="listening"] .orb-ripple { border-color: rgba(var(--glow), .7); animation: orb-ripple 1.5s var(--ease-out) infinite; }
+.orb[data-state="listening"] .orb-ring { opacity: calc(.6 + var(--level) * .4); animation-duration: 3.2s; }
+.orb[data-state="listening"]:not([data-meter]) .orb-ripple { border-color: rgba(var(--glow), .7); animation: orb-ripple 1.5s var(--ease-out) infinite; }
+.orb[data-state="listening"][data-voice] .orb-halo { opacity: 1; }
 
-/* thinking: light circulates inside the glass; the sphere itself stays calm */
+/* thinking: two arcs circle in a controlled rhythm; the sphere itself stays calm */
 .orb[data-state="thinking"] { --breath: 3.2s; }
 .orb[data-state="thinking"] .orb-core { animation-duration: 2.6s; opacity: .9; inset: 18%; }
 .orb[data-state="thinking"] .orb-halo { opacity: .55; }
+.orb[data-state="thinking"] .orb-ring { opacity: .95; animation-duration: 1.25s; animation-timing-function: cubic-bezier(.45, .05, .55, .95); }
+.orb[data-state="thinking"] .orb-ring::after { opacity: 1; animation: orb-drift-rev 2.1s linear infinite; }
 
-/* speaking: gentle pulses; word boundaries add a brief brightening */
+/* speaking: gentle pulses; each spoken word boundary adds a brief brightening */
 .orb[data-state="speaking"] { animation: orb-speak .9s ease-in-out infinite; }
 .orb[data-state="speaking"] .orb-core { opacity: .95; inset: 16%; }
+.orb[data-state="speaking"] .orb-ring { opacity: .75; animation-duration: 4s; }
 .orb.pulse .orb-halo { animation: none; opacity: 1; transform: scale(1.08); transition: none; }
+.orb.pulse .orb-ring { opacity: 1; transition: none; }
 
 /* success: one quiet ring of light, then rest */
 .orb[data-state="success"] { --core-a: #c9f0b6; --core-c: #f2fbe4; }
@@ -681,14 +711,33 @@ dialog.sheet[open] { animation: dlgIn .22s var(--ease); }
 
 /* error: warm, still, and clearly not "working" */
 .orb[data-state="error"] { --glow: 226, 140, 90; --core-a: #f3b48c; --core-b: #d0703f; --core-c: #f7d9b8; --core-d: #e09264; animation: none; }
-.orb[data-state="error"] .orb-core { animation: none; }
+.orb[data-state="error"] .orb-core, .orb[data-state="error"] .orb-ring { animation: none; }
+.orb[data-state="error"] .orb-ring { opacity: .5; }
 
 /* unavailable: desaturated and motionless, so nothing implies a live assistant */
 .orb[data-state="unavailable"] { animation: none; filter: grayscale(1) brightness(.85); }
 .orb[data-state="unavailable"] .orb-core, .orb[data-state="unavailable"] .orb-halo { animation: none; opacity: .25; }
+.orb[data-state="unavailable"] .orb-ring { animation: none; opacity: 0; }
+
+/* forming: used only by the startup screen while Tend is starting. Layers arrive in turn. */
+.orb[data-state="forming"] { animation: orb-breathe 3.2s ease-in-out 1.4s infinite; }
+.orb[data-state="forming"] .orb-halo { animation: orb-form-glow 1.1s var(--ease-out) both, orb-halo 3.2s ease-in-out 1.1s infinite; }
+.orb[data-state="forming"] .orb-shell { animation: orb-form-shell 1s var(--ease-out) .15s both; }
+.orb[data-state="forming"] .orb-core { inset: 18%; opacity: .9; animation: orb-form-fade .9s ease-out .45s both, orb-drift 2.6s linear .45s infinite; }
+.orb[data-state="forming"] .orb-glint { animation: orb-form-fade .6s ease-out .9s both; }
+.orb[data-state="forming"] .orb-ring { opacity: .95; animation: orb-form-ring 1s var(--ease-out) .6s both, orb-drift 1.25s cubic-bezier(.45, .05, .55, .95) .6s infinite; }
+.orb[data-state="forming"] .orb-ring::after { opacity: 1; animation: orb-form-fade .6s ease-out 1s both, orb-drift-rev 2.1s linear 1s infinite; }
+@keyframes orb-form-glow { from { opacity: 0; transform: scale(.4); } }
+@keyframes orb-form-shell { from { opacity: 0; transform: scale(.55); filter: blur(6px); } }
+@keyframes orb-form-fade { from { opacity: 0; } }
+@keyframes orb-form-ring { from { opacity: 0; transform: rotate(-120deg) scale(.8); } }
+html[data-entry="return"] .orb[data-state="forming"] > span,
+html[data-entry="return"] .orb[data-state="forming"] .orb-ring::after { animation-delay: 0s; }
 
 @media (prefers-reduced-motion: reduce) {
   .orb, .orb > span { animation: none !important; }
+  .orb-ring::after { animation: none !important; }
+  .orb-core, .orb-ring { transition: none; }
   .orb[data-state="listening"] .orb-ripple { border-color: rgba(var(--glow), .8); transform: scale(1.18); }
   .orb[data-state="thinking"] .orb-core { opacity: 1; }
 }
@@ -706,29 +755,64 @@ dialog.sheet[open] { animation: dlgIn .22s var(--ease); }
 .orb-btn[data-state="listening"] .orb-mic, .orb-btn[data-state="thinking"] .orb-mic, .orb-btn[data-state="speaking"] .orb-mic { opacity: 0; }
 
 /* =====================================================================
-   Splash: shown only while the app genuinely initialises
+   Startup screen. First entry of a browser session (or ?intro): a short
+   introduction on the forest brand surface that ends when Tend is ready.
+   Return visits: nothing is shown unless startup takes noticeably long.
    ===================================================================== */
 .splash {
-  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; text-align: center;
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; text-align: center; overflow: hidden;
+  color: var(--ink-inverse);
   background:
-    radial-gradient(1200px 600px at 50% 38%, rgba(255, 253, 248, .9), rgba(246, 241, 231, 0) 70%),
-    var(--ivory);
-  transition: opacity var(--dur-3) var(--ease-out), visibility 0s linear var(--dur-3);
+    radial-gradient(70vmax 50vmax at 50% 42%, #1f5140 0%, rgba(31, 81, 64, 0) 70%),
+    linear-gradient(180deg, #123323 0%, #0c2419 100%);
+  transition: opacity 600ms var(--ease-out), visibility 0s linear 600ms;
 }
-.splash.done { opacity: 0; visibility: hidden; }
-.splash-inner { display: grid; justify-items: center; gap: 22px; padding: 24px; }
-.splash .orb { --orb: 112px; }
-.splash-word { font-family: var(--serif); font-size: 48px; letter-spacing: -.03em; color: var(--forest-ink); line-height: 1; margin: 6px 0 0; font-weight: 450; }
-.splash-line { font-family: var(--serif); font-style: italic; font-size: 18px; color: var(--ink-2); margin: 0; }
-.splash-status { min-height: 1.4em; font-size: 13px; color: var(--ink-3); margin: 0; }
-.splash-error { display: none; gap: 12px; justify-items: center; max-width: 420px; }
-.splash.failed .splash-error { display: grid; }
-.splash.failed .splash-line { display: none; }
-.splash-inner > * { animation: splash-in var(--dur-3) var(--ease-out) both; }
-.splash-inner > :nth-child(2) { animation-delay: 80ms; }
-.splash-inner > :nth-child(3) { animation-delay: 160ms; }
-@keyframes splash-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .splash { transition: none; } .splash-inner > * { animation: none; } }
+/* ambient light: two slow, soft pools */
+.splash::before, .splash::after {
+  content: ""; position: absolute; width: 70vmax; height: 70vmax; border-radius: 50%; pointer-events: none; filter: blur(40px);
+}
+.splash::before { left: -25vmax; top: -30vmax; background: radial-gradient(circle, rgba(110, 211, 197, .16), rgba(110, 211, 197, 0) 65%); animation: splash-drift 18s ease-in-out infinite alternate; }
+.splash::after { right: -30vmax; bottom: -35vmax; background: radial-gradient(circle, rgba(227, 245, 201, .1), rgba(227, 245, 201, 0) 65%); animation: splash-drift 22s ease-in-out infinite alternate-reverse; }
+@keyframes splash-drift { to { transform: translate(6vmax, 4vmax); } }
+html[data-entry="return"] .splash { animation: splash-appear 300ms ease-out 350ms both; }
+@keyframes splash-appear { from { opacity: 0; } }
+.splash.done { opacity: 0; visibility: hidden; animation: none; }
+.splash.done .splash-inner { transform: scale(1.03); filter: blur(2px); }
+.splash-inner { position: relative; z-index: 1; display: grid; justify-items: center; gap: 26px; padding: 24px; transition: transform 600ms var(--ease-out), filter 600ms var(--ease-out); }
+.splash .orb { --orb: 132px; margin-bottom: 6px; }
+.splash-word { font-family: var(--serif); font-size: 60px; letter-spacing: -.035em; color: #f6f1e7; line-height: 1; margin: 0; font-weight: 420; }
+.splash-line { font-size: 11.5px; letter-spacing: .2em; text-transform: uppercase; color: rgba(246, 241, 231, .58); margin: 12px 0 0; font-weight: 600; }
+.splash-status { min-height: 1.4em; font-size: 13.5px; color: rgba(246, 241, 231, .62); margin: 0; font-family: var(--serif); font-style: italic; }
+.splash-error { display: none; gap: 14px; justify-items: center; max-width: 440px; }
+.splash-error p { margin: 0; color: rgba(246, 241, 231, .8); }
+.splash-error .btn-primary { background: #f6f1e7; color: var(--forest-ink); border-color: #f6f1e7; }
+.splash.failed .splash-error, .splash.slow .splash-error { display: grid; }
+.splash.slow:not(.failed) .splash-error .btn-primary { background: transparent; color: #f6f1e7; border-color: rgba(246, 241, 231, .35); }
+.splash.failed .splash-line, .splash.failed .splash-status { display: none; }
+.splash-inner > * { animation: splash-in 700ms var(--ease-out) both; }
+.splash-inner > :nth-child(1) { animation: none; }
+.splash-inner > :nth-child(2) { animation-delay: 650ms; }
+.splash-inner > :nth-child(3) { animation-delay: 900ms; }
+html[data-entry="return"] .splash-inner > * { animation-delay: 0s; animation-duration: 1ms; }
+@keyframes splash-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* the workspace arrives when the startup screen leaves */
+body.entering .app-header { animation: app-in 520ms var(--ease-out) both; }
+body.entering .content > * { animation: app-in 600ms var(--ease-out) 80ms both; }
+body.entering .rail:not([hidden]) { animation: app-in-side 640ms var(--ease-out) 160ms both; }
+@keyframes app-in { from { opacity: 0; transform: translateY(10px); } }
+@keyframes app-in-side { from { opacity: 0; transform: translateX(16px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .splash, .splash-inner { transition: none; }
+  .splash::before, .splash::after, .splash-inner > * { animation: none; }
+  html[data-entry="return"] .splash { animation: none; }
+  body.entering .app-header, body.entering .content > *, body.entering .rail { animation: none; }
+}
+@media (max-width: 560px) {
+  .splash .orb { --orb: 108px; }
+  .splash-word { font-size: 48px; }
+}
 
 /* =====================================================================
    Alexa+ panel refinements
@@ -867,3 +951,12 @@ dialog.sheet[open] { animation: dlgIn .22s var(--ease); }
 
 /* never show "Stop speaking" unless speech is actually playing */
 .rail-stop[hidden] { display: none !important; }
+
+/* ---------- interaction polish ---------- */
+/* Touch devices: every control is at least 44px tall. */
+@media (pointer: coarse) {
+  .btn, .btn-sm, .icon-btn, .segmented button, .suggestions button, .rail-stop, .rail-foot button, .actor-btn { min-height: 44px; }
+  .btn-sm { padding-inline: 14px; }
+}
+/* Focus rings that read on the dark surfaces (Alexa panel, startup screen). */
+.rail :focus-visible, .splash :focus-visible, .rail-toggle:focus-visible { outline: 2px solid #9fd8d1; outline-offset: 3px; }

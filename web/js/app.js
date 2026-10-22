@@ -6,8 +6,9 @@ import { renderPeople } from "./views/people.js";
 import { renderSupply } from "./views/supply.js";
 import { renderHandoff } from "./views/handoff.js";
 import { renderDeveloper } from "./views/developer.js";
-import { mountAssistant, renderSuggestions, newSession, updateEngine, focusInput, setAvailability } from "./assistant.js";
+import { mountAssistant, renderSuggestions, newSession, updateEngine, focusInput, setAvailability, mirrorOrb } from "./assistant.js";
 import { createOrb } from "./orb.js";
+import { createSplash } from "./splash.js";
 
 const ROUTES = {
   today: { label: "Today", icon: "home", render: renderToday },
@@ -94,7 +95,8 @@ function closeRail() {
   else { layout.classList.add("no-rail"); rail.hidden = true; }
   if (!compact.matches) try { localStorage.setItem("tend.rail", "closed"); } catch { /* ignore */ }
 }
-railToggle.append(createOrb(38).el, h("span", { class: "label" }, "Ask Alexa+"));
+const toggleOrb = createOrb(38);
+railToggle.append(toggleOrb.el, h("span", { class: "label" }, "Ask Alexa+"));
 railToggle.setAttribute("aria-label", "Open Alexa+");
 railToggle.addEventListener("click", openRail);
 
@@ -109,6 +111,7 @@ function render(reason) {
     return;
   }
   const view = ROUTES[r].render();
+  if (reason === "route" || reason === "init") view.classList.add("enter");
   const banner = !canWrite() && r !== "developer"
     ? h("div", { class: "viewonly-banner", role: "note" }, icon("info", "sm"), `${actor().name} has view-only access. You can see everything; only caregivers can log doses, add notes or request refills.`)
     : null;
@@ -155,33 +158,19 @@ setInterval(() => {
 }, 20_000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.data) refresh("poll"); });
 
-// ---------- splash: visible only while the app genuinely initialises ----------
-const splash = $("splash");
-function splashStatus(text) {
-  const el = $("splashStatus");
-  if (el) el.textContent = text;
-}
-function finishSplash() {
-  if (!splash) return;
-  splash.setAttribute("aria-busy", "false");
-  splash.classList.add("done");
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  setTimeout(() => splash.remove(), reduce ? 0 : 500);
-}
-function failSplash(message) {
-  if (!splash) return;
-  splash.classList.add("failed");
-  splash.setAttribute("aria-busy", "false");
-  const orbEl = splash.querySelector(".orb");
-  orbEl.dataset.state = "error";
-  orbEl.setAttribute("aria-label", "Tend couldn't start");
-  splashStatus("");
-  $("splashError").textContent = message;
-}
+// ---------- startup: the splash leaves when Tend is genuinely ready ----------
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const splash = createSplash($("splash"), { entry: document.documentElement.dataset.entry ?? "first", reducedMotion: reduceMotion });
 $("splashRetry")?.addEventListener("click", () => location.reload());
 
+function startupFailed(message) {
+  splash.fail(message);
+  content.replaceChildren(h("div", { class: "card state-card" }, h("h2", { class: "section-title" }, "Tend couldn't start"), h("p", { class: "muted" }, message), h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
+}
+splash.onTimeout(() => startupFailed("Tend didn't respond within 20 seconds. Check that the server is running, then try again."));
+
 async function init() {
-  splashStatus("Connecting to your care record…");
+  splash.status("Connecting to your care record");
   const cfg = await loadConfig();
   setTimezone(cfg.timezone);
   let saved = null;
@@ -189,19 +178,23 @@ async function init() {
   state.actorId = cfg.caregivers.some((c) => c.id === saved) ? saved : cfg.caregivers[0]?.id;
   renderHeader();
   mountAssistant(rail, { onClose: closeRail });
+  mirrorOrb(toggleOrb);
   let railPref = null;
   try { railPref = localStorage.getItem("tend.rail"); } catch { /* ignore */ }
   if (!compact.matches && railPref === "closed") closeRail();
-  splashStatus("Loading today's doses, supply and notes…");
+  splash.status("Loading today's doses, supply and notes");
   await refresh("init");
+  if (splash.state === "failed") return;
   if (state.error) {
-    failSplash(`Tend couldn't load the care record: ${state.error}`);
+    startupFailed(`Tend couldn't load the care record: ${state.error}`);
     return;
   }
-  finishSplash();
+  try { sessionStorage.setItem("tend.entered", "1"); } catch { /* ignore */ }
+  await splash.ready();
+  if (!reduceMotion) {
+    document.body.classList.add("entering");
+    setTimeout(() => document.body.classList.remove("entering"), 900);
+  }
 }
 
-init().catch((err) => {
-  failSplash(`Tend couldn't start: ${err.message}. Check that the server is running.`);
-  content.replaceChildren(h("div", { class: "card" }, h("h2", { class: "section-title" }, "Tend couldn't start"), h("p", { class: "muted" }, err.message)));
-});
+init().catch((err) => startupFailed(`Tend couldn't start: ${err.message}. Check that the server is running.`));

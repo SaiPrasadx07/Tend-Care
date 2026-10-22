@@ -28,7 +28,7 @@ Tend is an Alexa+ add-on built as a self-hosted **MCP server** (spec **2025-11-2
 - **AWS (AWS Builder):** the assistant reasons on **Amazon Bedrock**'s Converse API with tool use. MCP `tools/list` becomes Bedrock tool specs, each `toolUse` becomes an MCP `tools/call`, and results return as text plus JSON. **Bedrock Guardrails** denies medical-advice topics, applied only to the user's words via `guardContent` so medication names in tool results don't false-trigger.
 - **Safety and security:** the double-dose guard, two-phase actions with expiry and single-use compare-and-set, a host-side confirmation gate, bearer auth with short-lived HMAC session tokens for the browser, DNS-rebinding protection, rate limits, strict CSP and double-sandboxed MCP App views.
 - **Conversation:** an intent-aware assistant that asks a short clarifying question for vague requests, answers clear ones narrowly, follows up with context ("What about tonight?"), and never writes on an assumption (ambiguous medicine → "for Mom or Dad?"; "she probably took it" → confirm first). Offline it's a deterministic intent engine composing replies from verified tool results; with AWS configured, Bedrock generates them under the same rules.
-- **Tests:** 79 automated tests against the real HTTP server, covering protocol negotiation, auth, the guards, timezone/DST math, and the Bedrock tool loop with a scripted client (including a model that tries to self-confirm a refill and is blocked).
+- **Tests:** 99 automated tests against the real HTTP server, covering protocol negotiation, auth, the guards, timezone/DST math, and the Bedrock tool loop with a scripted client (including a model that tries to self-confirm a refill and is blocked).
 
 ## Challenges we ran into
 

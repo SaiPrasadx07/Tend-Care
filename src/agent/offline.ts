@@ -5,7 +5,7 @@
 // MCP tool results. Every read and write is a real MCP tools/call, so the
 // server's permission and safety rules still apply.
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { AFFIRMATIVE, NEGATIVE, classify, scopeOf, type Entities, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
+import { AFFIRMATIVE, NEGATIVE, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
 
 export { AFFIRMATIVE, NEGATIVE, parseSlotTime } from "./intent.ts";
 
@@ -16,13 +16,20 @@ type Pending =
   | { type: "which_person"; intent: Understanding["intent"]; entities: Entities; candidates: string[] }
   | { type: "vague" }
   | { type: "which_med"; person?: string; intent: Understanding["intent"] }
-  | { type: "offer_refill"; person: string; med: string };
+  | { type: "offer_refill"; person: string; med: string }
+  | { type: "which_aspect"; day: Exclude<Day, "today">; person?: string };
 
 export interface OfflineSession {
   person?: string;
   medication?: string;
   lastIntent?: Understanding["intent"];
   lastScope?: TimeScope;
+  lastDay?: Day;
+  /** Turns so far: used to vary phrasing deterministically and to avoid repeating the introduction. */
+  turns: number;
+  greeted: boolean;
+  /** Consecutive turns Tend couldn't understand; the second one gets the full list of what it can do. */
+  misses: number;
   /** Words the user uses for people ("Mom"), so replies mirror their language. */
   words: Record<string, string>;
   pending?: Pending;
@@ -31,7 +38,7 @@ export interface OfflineSession {
 }
 
 export function newOfflineSession(): OfflineSession {
-  return { words: {} };
+  return { words: {}, turns: 0, greeted: false, misses: 0 };
 }
 
 export interface OfflineOptions {
@@ -51,6 +58,16 @@ type Call = (name: string, args: Record<string, unknown>) => Promise<CallToolRes
 interface Slot { medicationId: string; medication: string; time: string; state: string; dose: string; instructions: string; recordedAt: string | null; loggedBy: string | null }
 interface PersonStatus { name: string; slots: Slot[]; counts: Record<string, number> }
 interface Forecast { medicationId: string; personName: string; medication: string; daysLeft: number; runoutDate: string; refillsRemaining: number; openRefillRequest: boolean; urgency: string; quantityOnHand: number }
+
+const NUMBER_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+const numWord = (n: number) => NUMBER_WORDS[n] ?? String(n);
+
+/** Local calendar date (YYYY-MM-DD) in the household timezone, shifted by whole days. */
+function localDate(now: Date, timezone: string, offsetDays = 0): string {
+  const d = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  const [y, m, day] = d.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, day + offsetDays)).toISOString().slice(0, 10);
+}
 
 const HOUSEHOLD_TTL_MS = 30_000;
 const FEMALE = new Set(["mom", "mum", "amma", "mother", "grandma", "nani", "aunt"]);
@@ -117,20 +134,169 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     const w = ref(name).toLowerCase();
     return FEMALE.has(w) ? "her" : MALE.has(w) ? "his" : "their";
   };
+  const subj = (name: string) => ({ her: "she", his: "he", their: "they" })[pron(name)];
   const ownersOf = (med: string) => household.filter((p) => p.medications.some((m) => m.name.toLowerCase() === med.toLowerCase())).map((p) => p.name);
   const everyoneWords = () => household.map((p) => session.words[p.name] ?? p.aliases[0] ?? p.name);
   const orList = (xs: string[]) => listJoin(xs).replace(/ and ([^,]+)$/, " or $1");
+  // Deterministic variety: the same facts, phrased a little differently from turn to turn.
+  session.turns = (session.turns ?? 0) + 1;
+  const pick = (xs: string[]) => xs[session.turns % xs.length]!;
+  const example = () => {
+    const [a, b] = household;
+    if (!a) return "What's due today?";
+    return pick([`What's left for ${ref(a.name)} today?`, b ? `Did ${ref(b.name)} take ${pron(b.name)} pills?` : `Did ${ref(a.name)} take ${pron(a.name)} pills?`]);
+  };
+  /** "her" for Mom, "Ravi's" when no pronoun fits; used once a person is already named in the sentence. */
+  const theirs = (name: string) => (pron(name) === "their" ? poss(name) : pron(name));
+  /** "Lisinopril at 8 AM, Metformin at 8 AM and 8 PM, and Atorvastatin at 9 PM" */
+  const scheduleText = (slots: Slot[]) => {
+    const byMed = new Map<string, string[]>();
+    for (const x of slots) byMed.set(short(x.medication), [...(byMed.get(short(x.medication)) ?? []), t12(x.time)]);
+    const items = [...byMed].map(([m, times]) => `${m} at ${listJoin(times)}`);
+    // A serial comma keeps "Metformin at 8 AM and 8 PM, and Atorvastatin" unambiguous.
+    return items.length > 2 && items.some((x) => x.includes(" and ")) ? `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}` : listJoin(items);
+  };
+  const doseBits = (s: Slot) => `${t12(s.time)} ${short(s.medication)}`;
+  const givenBit = (s: Slot) => `${doseBits(s)} was logged as given${s.recordedAt ? ` at ${clock(s.recordedAt)}` : ""}${s.loggedBy ? ` by ${s.loggedBy}` : ""}`;
 
   // ---------- composers (each uses the minimum tool calls for the question) ----------
-  async function status(person: string | undefined, scope: TimeScope | undefined): Promise<OfflineReply> {
+  async function status(person: string | undefined, scope: TimeScope | undefined, focus?: Focus, day?: Day): Promise<OfflineReply> {
+    if (day && day !== "today") return dayStatus(person, day);
     const r = await call("get_care_status", person ? { person } : {});
     if (r.isError) return { reply: errorText(r) };
     const people = (data(r).people as PersonStatus[]) ?? [];
     session.lastIntent = "status";
     session.lastScope = scope;
+    session.lastDay = "today";
     if (person) session.person = person;
-    const lines = people.map((p) => personDay(p, scope, people.length === 1));
+    const lines = people.map((p) => (focus === "taken" ? takenAnswer(p) : focus === "remaining" ? remainingAnswer(p, scope) : personDay(p, scope, people.length === 1)));
     return { reply: lines.join(" ") };
+  }
+
+  /** Doses for another day. Tomorrow is schedule only (nothing can be logged yet); yesterday is what was recorded. */
+  async function dayStatus(person: string | undefined, day: Exclude<Day, "today">, med?: string): Promise<OfflineReply> {
+    const date = localDate(now(), opts.timezone, day === "tomorrow" ? 1 : -1);
+    const r = await call("get_care_status", { ...(person ? { person } : {}), date });
+    if (r.isError) return { reply: errorText(r) };
+    const people = (data(r).people as PersonStatus[]) ?? [];
+    const alerts = (data(r).supplyAlerts as Forecast[] | undefined) ?? [];
+    session.lastIntent = "status";
+    session.lastDay = day;
+    if (person) session.person = person;
+    const lines = people.map((p, i) => {
+      const lead = i === 0 ? `${cap(day)}, ` : "";
+      const who = i === 0 ? ref(p.name) : cap(ref(p.name));
+      const slots = p.slots.filter((s) => !med || short(s.medication).toLowerCase() === med.toLowerCase());
+      if (!slots.length) return `${lead}${who} has nothing scheduled${med ? ` for ${med}` : ""}.`;
+      if (day === "tomorrow") {
+        let line = `${lead}${who} has ${scheduleText(slots)}.`;
+        const short1 = alerts.filter((a) => a.personName === p.name && a.daysLeft <= 1 && !a.openRefillRequest && slots.some((s) => s.medicationId === a.medicationId));
+        if (short1.length) line += ` ${listJoin(short1.map((a) => short(a.medication)))} may run out before then, and no refill has been requested.`;
+        return line;
+      }
+      const given = slots.filter((s) => s.state === "taken");
+      const notLogged = slots.filter((s) => s.state === "missed" || s.state === "due");
+      const skipped = slots.filter((s) => s.state === "skipped");
+      if (given.length === slots.length && slots.length > 2) {
+        const last = given.reduce((a, b) => ((a.recordedAt ?? "") > (b.recordedAt ?? "") ? a : b));
+        return `${i === 0 && e.focus === "taken" ? "Yes. " : ""}All ${numWord(slots.length)} of ${poss(p.name)} doses were logged as given ${day}${last.recordedAt ? `, the last at ${clock(last.recordedAt)}` : ""}.`;
+      }
+      const parts: string[] = [];
+      if (given.length) parts.push(`${poss(p.name)} ${listJoin(given.map(givenBit))}`);
+      if (skipped.length) parts.push(`${given.length ? theirs(p.name) : poss(p.name)} ${listJoin(skipped.map(doseBits))} ${skipped.length === 1 ? "was" : "were"} marked skipped`);
+      if (notLogged.length) parts.push(`${given.length || skipped.length ? theirs(p.name) : poss(p.name)} ${listJoin(notLogged.map(doseBits))} ${notLogged.length === 1 ? "wasn't" : "weren't"} logged, so I can't confirm ${notLogged.length === 1 ? "it was" : "they were"} taken`);
+      const answer = e.focus === "taken" && i === 0 && people.length === 1 ? (notLogged.length || skipped.length ? (given.length ? "Partly. " : "No. ") : "Yes. ") : "";
+      return `${answer}${lead}${parts.join("; ")}.`;
+    });
+    return { reply: lines.join(" ") };
+  }
+
+  /** "Did Dad take his pills?" — what was recorded, with honest uncertainty about anything not logged. */
+  function takenAnswer(p: PersonStatus): string {
+    const soFar = p.slots.filter((s) => s.state !== "upcoming");
+    const given = soFar.filter((s) => s.state === "taken");
+    const skipped = soFar.filter((s) => s.state === "skipped");
+    const missed = soFar.filter((s) => s.state === "missed");
+    const due = soFar.filter((s) => s.state === "due");
+    const next = p.slots.find((s) => s.state === "upcoming");
+    const nextBit = next ? ` Next is ${short(next.medication)} at ${t12(next.time)}.` : "";
+    if (!soFar.length) return `Nothing has come due for ${ref(p.name)} yet today.${nextBit}`;
+    const one = (xs: Slot[], a: string, b: string) => (xs.length === 1 ? a : b);
+    const out: string[] = [];
+    // Name the person once, in the first clause; pronouns after that.
+    const owner = (fallback: string) => (out.length ? fallback : poss(p.name));
+    if (given.length) out.push(`${owner(cap(theirs(p.name)))} ${listJoin(given.map(givenBit))}.`);
+    if (skipped.length) out.push(`${owner(cap(theirs(p.name)))} ${listJoin(skipped.map(doseBits))} ${one(skipped, "was", "were")} marked skipped.`);
+    if (missed.length) out.push(`${owner("The")} ${listJoin(missed.map(doseBits))} ${one(missed, "hasn't", "haven't")} been logged, so I can't confirm ${subj(p.name)} took ${one(missed, "it", "them")}.`);
+    if (due.length) out.push(`${owner("The")} ${listJoin(due.map(doseBits))} ${one(due, "is", "are")} due now and ${one(due, "hasn't", "haven't")} been logged yet.`);
+    const lead = !missed.length && !due.length && !skipped.length ? "Yes." : given.length ? "Partly." : missed.length ? "Not that I can see." : due.length && !skipped.length ? "Not yet." : "";
+    return `${lead ? lead + " " : ""}${out.join(" ")}${nextBit}`;
+  }
+
+  /** "What's left today?" — what's still to do, plus anything overdue. */
+  function remainingAnswer(p: PersonStatus, scope: TimeScope | undefined): string {
+    const slots = p.slots.filter((s) => inScope(s.time, scope));
+    const left = slots.filter((s) => s.state === "due" || s.state === "upcoming");
+    const overdue = slots.filter((s) => s.state === "missed");
+    const when = scope === "evening" ? "tonight" : scope === "morning" ? "this morning" : scope === "afternoon" ? "this afternoon" : "today";
+    let line = left.length
+      ? `${cap(ref(p.name))} still has ${listJoin(left.map((s) => `${short(s.medication)} ${s.state === "due" ? "(due now)" : `at ${t12(s.time)}`}`))}.`
+      : `Nothing is left for ${ref(p.name)} ${when}.`;
+    const not = overdue.length === 1 ? "hasn't" : "haven't";
+    if (overdue.length && left.length) line += ` ${cap(theirs(p.name))} ${listJoin(overdue.map(doseBits))} also ${not} been logged.`;
+    else if (overdue.length) line = `Nothing else is scheduled for ${ref(p.name)} ${when}, but ${theirs(p.name)} ${listJoin(overdue.map(doseBits))} ${not} been logged.`;
+    return line;
+  }
+
+  /** A check-in: today's doses, anything not logged and urgent supply, without reciting every slot. */
+  async function overview(person: string | undefined): Promise<OfflineReply> {
+    const [st, fc] = await Promise.all([call("get_care_status", person ? { person } : {}), call("forecast_refills", { ...(person ? { person } : {}), within_days: 7 })]);
+    if (st.isError) return { reply: errorText(st) };
+    const people = (data(st).people as PersonStatus[]) ?? [];
+    const low = fc.isError ? [] : ((data(fc).items as Forecast[]) ?? []).filter((f) => f.urgency !== "ok");
+    session.lastIntent = "overview";
+    session.lastDay = "today";
+    if (person) session.person = person;
+    const solo = people.length === 1;
+    // In a one-person answer, name them once and use pronouns after that.
+    const whose = (name: string) => (solo ? theirs(name) : poss(name));
+    const issues: string[] = [];
+    for (const p of people) {
+      const missed = p.slots.filter((s) => s.state === "missed");
+      if (missed.length) issues.push(`${whose(p.name)} ${listJoin(missed.map(doseBits))} ${missed.length === 1 ? "hasn't" : "haven't"} been logged`);
+    }
+    for (const f of low) {
+      if (f.openRefillRequest) continue;
+      issues.push(`${whose(f.personName)} ${short(f.medication)} is down to about ${plural(f.daysLeft, "day")} ${f.refillsRemaining > 0 ? "and hasn't been reordered" : "with no refills on the prescription, so the prescriber needs to authorize more"}`);
+    }
+    const facts = people.map((p) => {
+      const total = p.slots.length;
+      const given = p.slots.filter((s) => s.state === "taken").length;
+      const due = p.slots.filter((s) => s.state === "due");
+      const next = p.slots.find((s) => s.state === "upcoming");
+      const subject = solo ? cap(subj(p.name)) : cap(ref(p.name));
+      const has = solo && subj(p.name) === "they" ? "have" : "has";
+      const hasHad = solo && has === "has" ? `${subject}'s had` : `${subject} ${has} had`;
+      let line = total ? `${hasHad} ${given} of ${pron(p.name)} ${plural(total, "dose")} today` : `${subject} ${has} nothing scheduled today`;
+      if (due.length) line += `, with ${listJoin(due.map((s) => short(s.medication)))} due now`;
+      else if (next) line += `, and ${short(next.medication)} is next at ${t12(next.time)}`;
+      return `${line}.`;
+    });
+    const who = person ? ` for ${ref(person)}` : "";
+    const sentence = (x: string) => `${cap(x)}.`;
+    let reply: string;
+    if (!issues.length) reply = `${pick(["Everything's on track", "All on track", "Looking good"])}${who}. ${facts.join(" ")} Nothing is running low.`;
+    else if (issues.length === 1) reply = `Mostly on track${who}. One thing to look at: ${issues[0]}. ${solo ? "Otherwise, " + facts[0]!.charAt(0).toLowerCase() + facts[0]!.slice(1) : facts.join(" ")}`;
+    else reply = `${cap(numWord(issues.length))} things need attention${who}. ${issues.map(sentence).join(" ")} ${facts.join(" ")}`;
+    const requested = low.filter((f) => f.openRefillRequest);
+    if (requested.length) reply += ` A refill is already requested for ${listJoin(requested.map((f) => `${whose(f.personName)} ${short(f.medication)}`))}.`;
+    if (/\b(okay|ok|alright|all right|fine|doing)\b/.test(u.normalized)) reply = `I can only go by what's been recorded. ${reply}`;
+    const requestable = low.find((f) => !f.openRefillRequest && f.refillsRemaining > 0);
+    if (requestable) {
+      session.pending = { type: "offer_refill", person: requestable.personName, med: short(requestable.medication) };
+      reply += ` Want me to prepare a refill request for ${whose(requestable.personName)} ${short(requestable.medication)}?`;
+    }
+    return { reply };
   }
 
   function inScope(time: string, scope: TimeScope | undefined): boolean {
@@ -189,6 +355,25 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     session.medication = med;
     session.lastIntent = "med_info";
     const label = info?.label ?? med;
+    if (e.focus === "taken" && slots.length) {
+      const soFar = slots.filter((s) => s.state !== "upcoming");
+      const given = soFar.filter((s) => s.state === "taken");
+      const open = soFar.filter((s) => s.state === "missed" || s.state === "due");
+      const next = slots.find((s) => s.state === "upcoming");
+      const parts: string[] = [];
+      if (!soFar.length) parts.push(`Not yet; ${poss(person)} first ${short(label)} dose today is at ${t12(slots[0]!.time)}`);
+      else {
+        const lead = open.length ? (given.length ? "Partly" : "Not that I can see") : "Yes";
+        if (given.length) parts.push(`${lead}. The ${listJoin(given.map((s) => `${t12(s.time)} dose was logged as given${s.recordedAt ? ` at ${clock(s.recordedAt)}` : ""}${s.loggedBy ? ` by ${s.loggedBy}` : ""}`))}`);
+        if (open.length) parts.push(`${given.length ? "" : `${lead}. `}The ${listJoin(open.map((s) => t12(s.time)))} dose ${open.length === 1 ? "hasn't" : "haven't"} been logged, so I can't confirm ${subj(person)} took it`);
+        const skipped = soFar.filter((s) => s.state === "skipped");
+        if (skipped.length) parts.push(`The ${listJoin(skipped.map((s) => t12(s.time)))} dose was marked skipped`);
+      }
+      if (next && soFar.length) parts.push(`The ${t12(next.time)} dose is still to come`);
+      let reply = `${parts.join(". ")}.`;
+      if (f && f.urgency !== "ok" && !f.openRefillRequest) reply += ` Heads up: only about ${plural(f.daysLeft, "day")} of supply left.`;
+      return { reply };
+    }
     const sched = slots[0]?.instructions ? `, ${slots[0].instructions}` : "";
     let reply = `${poss(person)} ${label} is scheduled at ${listJoin((info?.times ?? slots.map((s) => s.time)).map(t12))}${sched}.`;
     const states = slots.map((s) => {
@@ -206,12 +391,17 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     return { reply };
   }
 
-  async function supply(person: string | undefined, med: string | undefined): Promise<OfflineReply> {
+  async function supply(person: string | undefined, med: string | undefined, day?: Day): Promise<OfflineReply> {
     const r = await call("forecast_refills", { ...(person ? { person } : {}), within_days: 7 });
     if (r.isError) return { reply: errorText(r) };
     const items = (data(r).items as Forecast[]) ?? [];
     session.lastIntent = "supply";
     if (person) session.person = person;
+    if (day === "tomorrow") {
+      const soon = items.filter((f) => f.daysLeft <= 1);
+      if (!soon.length) return { reply: `Nothing should run out by tomorrow${person ? ` for ${ref(person)}` : ""}.` };
+      return { reply: `${listJoin(soon.map((f) => `${poss(f.personName)} ${short(f.medication)}`))} could run out by tomorrow${soon.every((f) => f.openRefillRequest) ? "; a refill is already requested" : ""}.` };
+    }
     const describe = (f: Forecast) => {
       let s = `${poss(f.personName)} ${short(f.medication)} has about ${plural(f.daysLeft, "day")} left`;
       if (f.openRefillRequest) s += ", and a refill has already been requested";
@@ -276,16 +466,26 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     return { reply: `Is that ${what} for ${orList(candidates.map((c) => session.words[c] ?? household.find((h) => h.name === c)?.aliases[0] ?? c))}?` };
   };
 
+  function helpText(): string {
+    return `I keep the care circle's record of ${listJoin(everyoneWords())}'s medicines. You can ask what's due or what's left today, tell me a dose was given or skipped, check supply and refills, add a note, or ask for a handoff. For example: “${example()}”`;
+  }
+
   async function handle(intent: Understanding["intent"]): Promise<OfflineReply> {
+    if (intent !== "unknown") session.misses = 0;
     const person = e.people[0] ?? (e.pronoun ? session.person : undefined);
     const med = e.meds[0]?.name;
     switch (intent) {
-      case "greeting":
-        return { reply: `Hi ${opts.actorName}. I can check what's due, log a dose, look at supplies or prepare a handoff. What do you need?` };
+      case "greeting": {
+        const first = !session.greeted;
+        session.greeted = true;
+        const tod = /^good (morning|afternoon|evening)/.exec(u.normalized)?.[0];
+        if (first) return { reply: `${tod ? cap(tod) + "," : "Hey"} ${opts.actorName}. What can I help you with today?` };
+        return { reply: pick(["Hi again. What do you need?", "I'm here. What would you like to check?"]) };
+      }
       case "thanks":
-        return { reply: "You're welcome." };
+        return { reply: pick(["You're welcome.", "Anytime.", "Happy to help."]) };
       case "help":
-        return { reply: "Ask me what's due today, tell me when a dose was given or skipped, check how long a medicine will last, request a refill, add a note about how someone is doing, or ask for a handoff summary." };
+        return { reply: helpText() };
       case "advice":
         return { reply: "I can't advise on changing, skipping or combining doses. That's a question for the pharmacist or doctor. If it helps, I can add a note so the care circle knows you asked." };
       case "vague_medication": {
@@ -294,8 +494,10 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
         return { reply: `Happy to help. Are you checking what ${who} needs to take today, or asking about a particular medicine?` };
       }
       case "status":
-        if (med) return intentWithMed("med_info", person, med);
-        return status(person, e.timeScope);
+        if (med) return e.day && e.day !== "today" ? dayStatus(person ?? ownersOf(med)[0], e.day, med) : intentWithMed("med_info", person, med);
+        return status(person, e.timeScope, e.focus, e.day);
+      case "overview":
+        return overview(person);
       case "med_info":
         return intentWithMed("med_info", person, med);
       case "supply":
@@ -328,6 +530,8 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       case "log_taken":
       case "log_skipped": {
         const status = intent === "log_taken" ? "taken" : "skipped";
+        if (e.day === "tomorrow") return { reply: "A dose can't be logged ahead of time, so I haven't recorded anything." };
+        if (e.day === "yesterday") return { reply: "I can only log today's doses by voice, so I haven't recorded anything for yesterday." };
         const m = med ?? (e.pronoun || /\b(it|them|the dose|the pill)\b/.test(u.normalized) ? session.medication : undefined);
         if (!m) {
           session.pending = { type: "which_med", person, intent };
@@ -375,16 +579,32 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       case "followup": {
         const target = e.people[0] ?? session.person;
         const last = session.lastIntent;
+        if (e.day && e.day !== "today") {
+          if (last === "supply") return supply(target, e.meds[0]?.name, e.day);
+          const medCtx = e.meds[0]?.name ?? (last === "med_info" ? session.medication : undefined);
+          if (last || target || medCtx) return dayStatus(target, e.day, medCtx);
+          session.pending = { type: "which_aspect", day: e.day, person: target };
+          return { reply: `Do you mean ${e.day}'s doses, or whether anything will run out?` };
+        }
+        if (last === "overview" && e.people[0]) return overview(target);
         if (last === "med_info" && (e.meds[0] || e.people[0]) ) return intentWithMed("med_info", target, e.meds[0]?.name ?? session.medication);
         if (last === "supply") return supply(target, e.meds[0]?.name);
         if (e.meds[0]) return intentWithMed("med_info", target, e.meds[0].name);
-        return status(target, e.timeScope ?? (e.people[0] ? session.lastScope : undefined));
+        if (session.lastDay && session.lastDay !== "today" && !e.timeScope && !e.day) return dayStatus(target, session.lastDay);
+        return status(target, e.timeScope ?? (e.people[0] ? session.lastScope : undefined), e.focus);
       }
       case "affirm":
       case "deny":
         return { reply: intent === "affirm" ? "There's nothing waiting for a yes right now. What would you like to do?" : "Okay." };
-      default:
-        return { reply: "Sorry, I didn't catch that. You can ask what's due, log a dose, check supplies, request a refill, add a note or ask for a handoff." };
+      default: {
+        session.misses += 1;
+        if (session.misses >= 2) return { reply: `I'm still not following, sorry. ${helpText()}` };
+        if (session.person) {
+          const obj = pron(session.person) === "their" ? ref(session.person) : pron(session.person) === "her" ? "her" : "him";
+          return { reply: `Sorry, I didn't follow that. Is it about ${ref(session.person)}? You can ask what's left for ${obj} today, or tell me a dose was given.` };
+        }
+        return { reply: `${pick(["Sorry, I didn't catch that.", "I'm not sure I understood."])} Could you put it another way? For example, “${example()}”` };
+      }
     }
   }
 
@@ -441,6 +661,10 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
           Object.assign(e, { meds: pending.entities.meds, slotTime: pending.entities.slotTime ?? e.slotTime, quantity: pending.entities.quantity ?? e.quantity, hedged: pending.entities.hedged, timeScope: pending.entities.timeScope ?? e.timeScope });
           return handle(pending.intent);
         }
+        if (/\b(both|everyone|all of them|each)\b/.test(u.normalized) && ["status", "overview", "supply", "handoff", "followup"].includes(pending.intent)) {
+          e.people = [];
+          return handle(pending.intent);
+        }
         if (u.intent === "deny") return { reply: "Okay, I'll leave it." };
         break;
       }
@@ -457,6 +681,10 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
           if (pending.person && !e.people.length) e.people = [pending.person];
           return handle(pending.intent === "status" ? "med_info" : pending.intent);
         }
+        break;
+      case "which_aspect":
+        if (/\b(run(ning)? (out|low)|supply|stock|refill|low)\b/.test(u.normalized)) return supply(e.people[0] ?? pending.person, undefined, pending.day);
+        if (/\b(dose|doses|schedule|pills|meds|medicines?|take|due)\b/.test(u.normalized) || e.people.length || u.intent === "affirm") return dayStatus(e.people[0] ?? pending.person, pending.day);
         break;
       case "offer_refill":
         if (u.intent === "affirm") {

@@ -12,6 +12,9 @@ let busy = false;
 let lastText = "";
 let sessionId = newId();
 let speaking = false;
+/** Other orbs on the page (the empty-state orb, the "Ask Alexa+" button) mirror the assistant's real state. */
+const mirrors = new Set();
+let emptyOrb = null;
 
 // What a caregiver needs to know about each tool, in their language.
 const ACTIVITY = {
@@ -49,8 +52,15 @@ function engineLabel() {
   return cfg.engine === "bedrock" ? `Amazon Bedrock${cfg.guardrail ? " + Guardrails" : ""}` : "offline router, no LLM";
 }
 
+export function mirrorOrb(o) {
+  mirrors.add(o);
+  if (orb) o.set(orb.state === "success" ? "idle" : orb.state);
+}
+
 function setOrb(next) {
   orb.set(next);
+  for (const m of mirrors) m.set(next);
+  if (emptyOrb?.el.isConnected) emptyOrb.set(next);
   els.orbBtn.dataset.state = next;
   const text = {
     idle: `Ready · ${engineLabel()}`,
@@ -73,9 +83,10 @@ function flashOrb(next, ms = 1400) {
 }
 
 function emptyState() {
-  const big = createOrb(96);
+  emptyOrb = createOrb(96);
+  if (orb) emptyOrb.set(orb.state);
   return h("div", { class: "rail-empty" },
-    big.el,
+    emptyOrb.el,
     h("div", { class: "display" }, "How can I help with today's care?"),
     h("p", {}, "Ask out loud or type. Answers come from Tend's shared care record, and anything I change is saved as you."));
 }
@@ -140,7 +151,7 @@ function speak(text) {
     ?? speechSynthesis.getVoices().find((v) => /^en/i.test(v.lang));
   if (voice) u.voice = voice;
   u.onstart = () => { speaking = true; setOrb("speaking"); };
-  u.onboundary = () => orb.pulse();
+  u.onboundary = () => { orb.pulse(); if (emptyOrb?.el.isConnected) emptyOrb.pulse(); };
   u.onend = () => { if (speaking) { speaking = false; setOrb("idle"); } };
   u.onerror = () => { speaking = false; setOrb("idle"); };
   speechSynthesis.speak(u);
@@ -248,6 +259,53 @@ function mountCard(parent, card) {
 }
 
 // ---------- voice input ----------
+// Live microphone level for the listening orb. It runs only while speech
+// recognition is actually listening, and only when microphone permission is
+// already granted, so it never causes a second prompt. Without it the orb
+// falls back to its CSS listening animation.
+let meter = null;
+let meterWanted = false;
+const allOrbs = () => [orb, ...mirrors, ...(emptyOrb?.el.isConnected ? [emptyOrb] : [])];
+
+async function startMeter() {
+  meterWanted = true;
+  if (meter || matchMedia("(prefers-reduced-motion: reduce)").matches || !navigator.mediaDevices?.getUserMedia) return;
+  try {
+    const perm = await navigator.permissions?.query({ name: "microphone" });
+    if (perm?.state !== "granted" || !meterWanted) return;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!meterWanted) { stream.getTracks().forEach((t) => t.stop()); return; }
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+    const m = { stream, ctx, raf: 0, level: 0 };
+    meter = m;
+    const tick = () => {
+      if (meter !== m) return;
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += ((v - 128) / 128) ** 2;
+      // Fast attack, slow release, so the ring follows speech without flicker.
+      m.level = Math.max(Math.min(1, Math.sqrt(sum / buf.length) * 5), m.level * 0.86);
+      for (const o of allOrbs()) if (o.state === "listening") o.level(m.level);
+      m.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch { /* no meter: the CSS listening animation is used instead */ }
+}
+
+function stopMeter() {
+  meterWanted = false;
+  if (!meter) return;
+  cancelAnimationFrame(meter.raf);
+  meter.stream.getTracks().forEach((t) => t.stop());
+  meter.ctx.close().catch(() => {});
+  meter = null;
+  for (const o of allOrbs()) { o.level(null); o.voice(false); }
+}
+
 function setupMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
@@ -265,7 +323,9 @@ function setupMic() {
   rec.interimResults = true;
   let listening = false;
   let finalText = "";
-  rec.onstart = () => { listening = true; setOrb("listening"); els.orbBtn.setAttribute("aria-pressed", "true"); };
+  rec.onstart = () => { listening = true; setOrb("listening"); els.orbBtn.setAttribute("aria-pressed", "true"); startMeter(); };
+  rec.onspeechstart = () => { for (const o of allOrbs()) o.voice(true); };
+  rec.onspeechend = () => { for (const o of allOrbs()) o.voice(false); };
   rec.onresult = (e) => {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -276,6 +336,7 @@ function setupMic() {
   };
   rec.onend = () => {
     listening = false;
+    stopMeter();
     els.orbBtn.setAttribute("aria-pressed", "false");
     const text = finalText.trim();
     finalText = "";
@@ -283,6 +344,7 @@ function setupMic() {
   };
   rec.onerror = (e) => {
     listening = false;
+    stopMeter();
     setOrb("idle");
     if (e.error === "not-allowed" || e.error === "service-not-allowed") toast("Microphone access is blocked. Type instead.", "error");
     else if (e.error === "no-speech") toast("I didn't hear anything. Tap the orb and try again.");

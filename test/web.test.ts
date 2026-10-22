@@ -82,6 +82,20 @@ describe("caregiver web app", () => {
     assert.match(orbJs, /unavailable: "Alexa\+ is unavailable"/);
   });
 
+  test("startup: the entry mode is decided before first paint by a same-origin script, and the splash orb is 'forming'", async () => {
+    const html = await (await fetch(`${h.base}/`)).text();
+    const head = html.slice(0, html.indexOf("</head>"));
+    assert.ok(head.indexOf('<script src="js/boot.js"></script>') >= 0 && head.indexOf('<script src="js/boot.js"></script>') < head.indexOf("styles.css"), "boot.js runs before the stylesheet");
+    const boot = await fetch(`${h.base}/js/boot.js`);
+    assert.equal(boot.status, 200);
+    assert.match(boot.headers.get("content-type") ?? "", /javascript/);
+    assert.match(await boot.text(), /data-entry/);
+    assert.match(html, /<span class="orb" data-state="forming"[^>]*aria-label="Tend is starting"/);
+    const css = await (await fetch(`${h.base}/styles.css`)).text();
+    assert.ok(css.includes('.orb[data-state="forming"]'));
+    assert.ok(css.includes('html[data-entry="return"] .splash'), "return visits don't replay the introduction");
+  });
+
   test("MCP Apps sandbox proxy forbids network access from views", async () => {
     const res = await fetch(`${h.base}/sandbox-proxy.html`);
     assert.equal(res.status, 200);

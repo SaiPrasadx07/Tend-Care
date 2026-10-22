@@ -52,6 +52,11 @@ describe("intent understanding", () => {
     ["Should Mom take two pills since she missed one?", "advice"],
     ["Yes, go ahead", "affirm"],
     ["No, not now", "deny"],
+    ["Hi Alexa.", "greeting"],
+    ["Hi Alexa, did Dad take his pills?", "status"],
+    ["How are Mum's medicines looking?", "overview"],
+    ["Is Dad okay?", "overview"],
+    ["What does Mom have tomorrow?", "status"],
   ];
   for (const [text, intent] of cases) {
     test(`"${text}" → ${intent}`, () => assert.equal(classify(text, HOUSEHOLD).intent, intent));
@@ -65,6 +70,17 @@ describe("intent understanding", () => {
     assert.equal(e.timeScope, "evening");
     assert.equal(e.hedged, true);
     assert.equal(classify("did she take it?", HOUSEHOLD).entities.pronoun, true);
+  });
+
+  test("entities: everyday alias variants, day and focus", () => {
+    const mum = classify("How are Mum's medicines looking?", HOUSEHOLD).entities;
+    assert.deepEqual(mum.people, ["Lakshmi"]);
+    assert.equal(mum.personWord, "Mum");
+    const did = classify("Hi Alexa, did Dad take his pills yesterday?", HOUSEHOLD).entities;
+    assert.equal(did.day, "yesterday");
+    assert.equal(did.focus, "taken");
+    assert.equal(classify("What's left for Mom today?", HOUSEHOLD).entities.focus, "remaining");
+    assert.equal(classify("What about tomorrow?", HOUSEHOLD).entities.day, "tomorrow");
   });
 });
 
@@ -194,6 +210,98 @@ describe("conversation over MCP (offline engine)", () => {
       assert.equal(called(done, "confirm_action").length, 1);
       assert.match(done.reply, /recorded/);
       assert.doesNotMatch(done.speech, /Hello Maple Street/, "the long draft is shown, not read aloud");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a greeting is a greeting: no capability list, and the introduction isn't repeated", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const hi = await say("Hi Alexa.");
+      assert.equal(hi.reply, "Hey Priya. What can I help you with today?");
+      const again = await say("hello");
+      assert.doesNotMatch(again.reply, /Priya|log a dose|handoff/);
+      assert.ok(again.reply.length < 50, again.reply);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a check-in on one person summarizes their day and urgent supply, in the family's words", async () => {
+    const h = await startHarness({ clockAt: ["2026-10-21", "08:10"] });
+    try {
+      const t = await talker(h)("How are Mum's medicines looking?");
+      assert.deepEqual(called(t, "get_care_status")[0]?.arguments, { person: "Lakshmi" });
+      assert.equal(called(t, "forecast_refills").length, 1);
+      assert.match(t.reply, /Mum/, "mirrors 'Mum' even though the record says 'Mom'");
+      assert.match(t.reply, /Metformin is down to about 5 days/);
+      assert.match(t.reply, /0 of her 2 doses today, with Metformin due now/);
+      assert.doesNotMatch(t.reply, /Dad|Amlodipine/);
+      assert.equal(called(t, "request_refill").length, 0, "offering a refill doesn't prepare one");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("'did Dad take his pills?' reports what was logged and never infers a dose from the schedule", async () => {
+    const h = await startHarness({ clockAt: ["2026-10-21", "08:10"] });
+    try {
+      const say = talker(h);
+      h.clock.set("2026-10-21", "07:00");
+      const early = await say("Did Dad take his pills?");
+      assert.equal(early.reply, "Nothing has come due for Dad yet today. Next is Amlodipine at 9 AM.");
+      h.clock.set("2026-10-21", "12:30");
+      const late = await say("Did Dad take his pills?");
+      assert.match(late.reply, /^Not that I can see\./);
+      assert.match(late.reply, /Dad.s 9 AM Amlodipine hasn.t been logged, so I can.t confirm he took it/);
+      assert.doesNotMatch(late.reply, /was given|was logged as given/);
+      // A follow-up about tomorrow resolves Dad from context and reads the schedule for that date.
+      const tmr = await say("What about tomorrow?");
+      assert.deepEqual(called(tmr, "get_care_status")[0]?.arguments, { person: "Ravi", date: "2026-10-22" });
+      assert.equal(tmr.reply, "Tomorrow, Dad has Amlodipine at 9 AM.");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("with no context, 'what about tomorrow?' asks which meaning was intended", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const q = await say("What about tomorrow?");
+      assert.equal(q.reply, "Do you mean tomorrow's doses, or whether anything will run out?");
+      assert.equal(called(q, "get_care_status").length, 0);
+      const a = await say("anything running out");
+      assert.equal(called(a, "forecast_refills").length, 1);
+      assert.match(a.reply, /run out by tomorrow/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("the fallback suggests a concrete next step, and only lists everything after a second miss", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const first = await say("purple elephants");
+      assert.match(first.reply, /Could you put it another way\?/);
+      assert.doesNotMatch(first.reply, /handoff/);
+      const second = await say("banana telephone");
+      assert.match(second.reply, /still not following/);
+      assert.match(second.reply, /handoff/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a dose for another day is never logged against today", async () => {
+    const h = await startHarness({ clockAt: ["2026-10-21", "08:10"] });
+    try {
+      const t = await talker(h)("Mom took her metformin yesterday");
+      assert.equal(called(t, "log_dose").length, 0);
+      assert.match(t.reply, /haven't recorded anything/);
     } finally {
       await h.close();
     }
