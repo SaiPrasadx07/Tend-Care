@@ -5,7 +5,7 @@
 // MCP tool results. Every read and write is a real MCP tools/call, so the
 // server's permission and safety rules still apply.
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { AFFIRMATIVE, NEGATIVE, SYMPTOM, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
+import { AFFIRMATIVE, NEGATIVE, REMINDER, SYMPTOM, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
 
 export { AFFIRMATIVE, NEGATIVE, parseSlotTime } from "./intent.ts";
 
@@ -14,7 +14,7 @@ type Pending =
   | { type: "duplicate"; args: Record<string, unknown>; person: string; med: string }
   | { type: "confirm_log"; args: Record<string, unknown>; person: string; med: string; status: "taken" | "skipped" }
   | { type: "which_person"; intent: Understanding["intent"]; entities: Entities; candidates: string[]; text: string }
-  | { type: "confirm_note"; person: string; text: string; category: string }
+  | { type: "confirm_note"; person: string; text: string; category: string; fixed?: boolean }
   | { type: "offer_checkin"; person?: string }
   | { type: "vague" }
   | { type: "which_med"; person?: string; intent: Understanding["intent"] }
@@ -32,6 +32,10 @@ export interface OfflineSession {
   greeted: boolean;
   /** Consecutive turns Tend couldn't understand; the second one gets the full list of what it can do. */
   misses: number;
+  /** The last question answered, so "no, I meant Mom" can ask it again for someone else. */
+  lastAsk?: { intent: Understanding["intent"]; timeScope?: TimeScope; focus?: Focus; day?: Day; med?: string };
+  /** The last record written, and on which turn, so a correction right after it isn't silently ignored. */
+  lastWrite?: { person: string; what: string; turn: number };
   /** Words the user uses for people ("Mom"), so replies mirror their language. */
   words: Record<string, string>;
   pending?: Pending;
@@ -446,6 +450,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     }
     if (confirmDuplicate) return { reply: d.message };
     const what = `${poss(person)} ${t12(d.slotTime)} ${short(d.medication)}`;
+    session.lastWrite = { person, what: `the ${t12(d.slotTime)} ${short(d.medication)} dose`, turn: session.turns };
     let reply = status === "taken" ? `Logged: ${what} is recorded as given.` : `Okay, ${what} is marked as skipped.`;
     if (d.supplyWarning) reply += ` ${d.supplyWarning.replace(/^Only/, "There are only")}`;
     return { reply };
@@ -529,6 +534,40 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     return { reply: `${empathy}${urgent} Should I add “${quoted}” to ${theirs(person)} notes so the care circle knows?` };
   }
 
+  /** "What does Dad take?" — the medicine list from the care record, not today's status. */
+  function regimen(person: string | undefined): OfflineReply {
+    const people = person ? household.filter((p) => p.name === person) : household;
+    session.lastIntent = "regimen";
+    if (person) session.person = person;
+    const lines = people.map((p) => {
+      if (!p.medications.length) return `${cap(ref(p.name))} has no medicines on file.`;
+      const byTime = [...p.medications].sort((a, b) => (a.times[0] ?? "").localeCompare(b.times[0] ?? ""));
+      return `${cap(ref(p.name))} takes ${listJoin(byTime.map((m) => `${m.label} at ${listJoin(m.times.map(t12))}`))}.`;
+    });
+    if (!lines.length) return { reply: "There's no one in the care record yet." };
+    return { reply: lines.join(" ") };
+  }
+
+  /** "Dad missed his morning dose, what should I do?" — what the record shows, and who can actually advise. */
+  async function missedAdvice(person: string | undefined): Promise<OfflineReply> {
+    const r = await call("get_care_status", person ? { person } : {});
+    if (r.isError) return { reply: errorText(r) };
+    const people = (data(r).people as PersonStatus[]) ?? [];
+    session.lastIntent = "missed_advice";
+    const open = people.map((p) => ({ p, slots: p.slots.filter((s) => s.state === "missed" || s.state === "due") })).filter((x) => x.slots.length);
+    const facts = open.length
+      ? open.map(({ p, slots }) => `${poss(p.name)} ${listJoin(slots.map(doseBits))} ${slots.length === 1 ? "hasn't" : "haven't"} been logged.`).join(" ")
+      : `Everything due so far${person ? ` for ${ref(person)}` : ""} has been logged, so I don't see a missed dose today.`;
+    const only = open.length === 1 ? open[0]! : undefined;
+    if (only) {
+      session.person = only.p.name;
+      if (only.slots.length === 1) session.medication = short(only.slots[0]!.medication);
+    } else if (person) session.person = person;
+    const guide = "I can't say whether a missed dose should be given late. The medicine's label or the pharmacist is the right guide for that.";
+    const offer = only ? ` If ${subj(only.p.name)} did take it, tell me and I'll log it.` : open.length ? " If any of these was actually given, tell me and I'll log it." : "";
+    return { reply: `${facts} ${guide}${offer}` };
+  }
+
   function helpText(): string {
     return `I keep the care circle's record of ${listJoin(everyoneWords())}'s medicines. You can ask what's due or what's left today, tell me a dose was given or skipped, check supply and refills, add a note, or ask for a handoff. For example: “${example()}”`;
   }
@@ -537,7 +576,41 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     if (intent !== "unknown") session.misses = 0;
     const person = e.people[0] ?? (e.pronoun ? session.person : undefined);
     const med = e.meds[0]?.name;
+    if (["status", "overview", "med_info", "supply", "handoff", "regimen", "advice", "missed_advice", "followup"].includes(intent)) {
+      session.lastAsk = { intent, timeScope: e.timeScope, focus: e.focus, day: e.day, med: med ?? (intent === "followup" ? session.medication : undefined) };
+    }
     switch (intent) {
+      case "correction": {
+        const to = e.people[0]!;
+        const w = session.lastWrite;
+        if (w && w.turn === session.turns - 1 && w.person !== to) {
+          session.pending = { type: "confirm_note", person: w.person, text: `${cap(w.what)} was recorded for ${ref(w.person)} by mistake; it was meant for ${ref(to)}`, category: "observation", fixed: true };
+          return { reply: `${cap(w.what)} is already recorded for ${ref(w.person)}, and I can't undo that by voice. Should I add a note to ${theirs(w.person)} record saying it was a mistake?` };
+        }
+        const last = session.lastAsk;
+        if (!last) return overview(to);
+        e.people = [to];
+        Object.assign(e, { timeScope: last.timeScope, focus: last.focus, day: last.day, meds: [] });
+        if (last.med) {
+          if (!ownersOf(last.med).includes(to)) {
+            const theirMeds = household.find((p) => p.name === to)?.medications.map((m) => m.name) ?? [];
+            if (theirMeds.length) session.pending = { type: "which_med", person: to, intent: "med_info" };
+            return { reply: `${cap(ref(to))} doesn't take ${last.med}.${theirMeds.length ? ` ${cap(subj(to))} ${subj(to) === "they" ? "take" : "takes"} ${listJoin(theirMeds)}. Which one should I check?` : ""}` };
+          }
+          e.meds = [{ name: last.med, owners: [to] }];
+        }
+        return handle(last.intent === "followup" ? "status" : last.intent);
+      }
+      case "regimen":
+        return regimen(person);
+      case "missed_advice":
+        return missedAdvice(person);
+      case "out_of_scope":
+        if (REMINDER.test(u.normalized)) return { reply: "I can't set reminders yet. What's due is always on the Today page, and you can ask me what's left at any time." };
+        return { reply: pick([
+          `That's outside what I can do here. I look after ${listJoin(everyoneWords())}'s medicines, notes and refills.`,
+          `I can't help with that one. I'm only set up for ${listJoin(everyoneWords())}'s care: doses, supply, notes and handoffs.`,
+        ]) };
       case "greeting": {
         const first = !session.greeted;
         session.greeted = true;
@@ -637,6 +710,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
         const r = await call("add_care_note", { person: who.person, text: noteText || sourceText, category });
         if (r.isError) return { reply: errorText(r) };
         session.person = who.person;
+        session.lastWrite = { person: who.person, what: "that note", turn: session.turns };
         return { reply: `Noted for ${ref(who.person)}. The care circle will see it in the next handoff.` };
       }
       case "self_feeling":
@@ -741,7 +815,16 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
           const r = await call("add_care_note", { person: pending.person, text: pending.text, category: pending.category });
           if (r.isError) return { reply: `I couldn't save that note. ${errorText(r)}` };
           session.person = pending.person;
+          session.lastWrite = { person: pending.person, what: "that note", turn: session.turns };
           return { reply: `Added to ${poss(pending.person)} notes. The care circle will see it in the next handoff.` };
+        }
+        // "No, it's Mom who has the migraine": same observation, different person. Ask again; still nothing saved.
+        if (e.people[0] && e.people[0] !== pending.person && !pending.fixed) {
+          const to = e.people[0];
+          const text = pending.text.startsWith(ref(pending.person)) ? ref(to) + pending.text.slice(ref(pending.person).length) : pending.text;
+          session.pending = { ...pending, person: to, text };
+          session.person = to;
+          return { reply: `Got it, ${ref(to)}. Should I add “${text}” to ${theirs(to)} notes?` };
         }
         if (u.intent === "deny") return { reply: "Okay, I haven't saved it." };
         break;

@@ -41,6 +41,10 @@ export type Intent =
   | "overview"
   | "self_feeling"
   | "observation"
+  | "correction"
+  | "regimen"
+  | "missed_advice"
+  | "out_of_scope"
   | "unknown";
 
 export interface Entities {
@@ -189,6 +193,16 @@ const MED_WORDS = /\b(medicine|medicines|medication|medications|meds|pills|table
 const GREETING = /^(hi|hello|hey|hiya|good (morning|afternoon|evening))\b[,.!\s]*/;
 const OVERVIEW = /\b(how (are|is|'s|s) (\w+'?s? )?(medicines?|meds|medications?|pills|tablets|doing|looking|getting on|holding up)|how (are|is) (things|everything|everyone|it going)|how's (everything|everyone|it going|things)|(is|are) (\w+ )?(okay|ok|alright|all right|fine)\b|(is|are) \w+ (feeling|doing) (okay|ok|alright|all right|fine|well)\b|anything (i should know|to worry about|wrong|urgent|important)|any (problems|concerns|issues|worries)|overview|status update|where are we|give me an update|update me)/;
 
+/** "No, I meant Mom", "actually Dad", "not Mom, Dad": the same request, a different person. */
+const CORRECTION = /^((no|nope|sorry|oops|wait|sorry no)[,.!]?\s+)?(i meant|i mean|meant|actually|not (\w+)[,.]?\s+(i meant\s+|i mean\s+)?)\b/;
+/** "What does Dad take?", "What meds is Mom on?" — the list of medicines, not today's status. */
+const REGIMEN = /\b(what (does|do) \w+ take|what (meds|medicines?|medications?|pills|tablets) (is|does|do|are) \w+ (on|take|taking)|what is \w+ on|what's \w+ on|list (\w+'s )?(meds|medicines|medications)|(meds|medicines?|medications?) list|which (meds|medicines|medications|pills) (does|do|is|are)|what (meds|medicines|medications) (does|do|is|are) \w+)\b/;
+const MISSED_ADVICE = /\b(missed|forgot|forgotten|didn't (get|take|have)|did not (get|take|have))\b/;
+const WHAT_TO_DO = /\b(what (should|do|can) (i|we) do|what now|should (i|we)|can (she|he|they|i|we|\w+) still|too late|is it (ok|okay|safe)|now or)\b/;
+/** Things Alexa itself does, but Tend doesn't. */
+const OUT_OF_SCOPE = /\b(weather|raining|temperature outside|music|song|songs|playlist|podcast|radio|news|headlines|timer|alarm|joke|lights?|thermostat|recipe|traffic|movie|sports?|score|shopping list|spotify)\b|^(play|call|text|order|buy|turn (on|off))\b/;
+export const REMINDER = /\b(remind me|set a reminder|reminders?)\b/;
+
 export function classify(text: string, household: HouseholdPerson[]): Understanding {
   let t = normalize(text);
   const e = extractEntities(text, household);
@@ -206,7 +220,11 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   const advice = e.question
     && has(/\b(should|is it (ok|okay|safe|fine)|can (she|he|they|i|we|mom|dad)|okay to|safe to|what if)\b/)
     && has(/\b(skip|stop|double|two|extra|cut|half|increase|reduce|change|mix|together|instead|more|less)\b/);
-  if (advice) intent = "advice";
+  const writeVerb = has(/\b(took|taken|gave|given|skipped|refused|note|refill|reorder|picked up)\b/);
+  if (CORRECTION.test(t) && e.people.length > 0 && t.split(" ").length <= 7 && !writeVerb && !has(SYMPTOM)) intent = "correction";
+  else if (advice) intent = "advice";
+  else if (has(MISSED_ADVICE) && has(WHAT_TO_DO)) intent = "missed_advice";
+  else if (has(REMINDER)) intent = "out_of_scope";
   else if (AFFIRMATIVE.test(t) && !has(/\b(reorder|refill|took|gave|note)\b/) && t.split(" ").length <= 8) intent = "affirm";
   else if (NEGATIVE.test(t) && t.split(" ").length <= 6) intent = "deny";
   else if (short && has(/^(hi|hello|hey|good (morning|afternoon|evening))\b/)) intent = "greeting";
@@ -216,6 +234,8 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   // ("I'm worried about Mom") makes it about them; a symptom about them is an observation.
   // "I'm worried about Mom" is still the caregiver's own feeling; "I think Dad has a fever" reports on Dad.
   else if (e.crisis || (FIRST_PERSON.test(t) && !REPORTING.test(t) && has(SYMPTOM) &&!has(/\b(note|took|gave|given|skipped|refill)\b/))) intent = "self_feeling";
+  else if (has(OUT_OF_SCOPE) && !e.people.length && !e.meds.length && !MED_WORDS.test(t)) intent = "out_of_scope";
+  else if (has(REGIMEN) && !e.meds.length && !e.day && !e.timeScope && !e.focus) intent = "regimen";
   else if (has(/^(what about|how about|and( what about)?|what of)\b/) || (short && t.startsWith("and "))) intent = "followup";
   else if (has(/\b(add a note|make a note|take a note|note that|remember that|write down)\b/)) intent = "note";
   else if (has(/\b(refill|reorder|re-order|order more|request more|get more)\b/) && !has(/\b(when|how long|status|left|need a refill\?)\b/) && !e.question) intent = "refill_request";

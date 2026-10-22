@@ -76,4 +76,24 @@ Partly, and only for the parts Tend controls.
   - a recorded run where a modified image is refused the key.
 - **Always state the limits:** model calls leave the enclave, authorized tokens still work, the host can still deny service, and side channels are out of scope.
 
+## 8. The security story to tell for the hackathon
+
+Tend does **not** use a TEE. The credible story is the protections that are implemented and tested today, with the TEE clearly labelled as future work.
+
+| Implemented and tested today | Where |
+|---|---|
+| Per-caregiver bearer tokens (constant-time compare); the browser only gets 1-hour HMAC-signed session tokens | `src/http/auth.ts`, `test/auth.test.ts` |
+| Role-scoped tool registration: viewers never see write tools | `src/mcp/server.ts`, `test/mcp.e2e.test.ts` |
+| Server-side double-dose guard, needing explicit confirmation for a second dose | `src/domain/care.ts`, `test/care.test.ts` |
+| Two-phase refills with expiry and single-use confirmation; the host blocks self-confirmation by the model | `src/agent/agent.ts`, `test/agent.test.ts` |
+| Every record attributed to the caregiver who made it | `src/domain/care.ts` |
+| DNS-rebinding protection (Host/Origin checks), body limit, rate limiting, strict CSP, sandboxed MCP App views | `src/http/app.ts`, `test/web.test.ts` |
+| Offline engine: with no LLM configured, nothing leaves the machine | `src/agent/offline.ts` |
+
+| Planned, not built | Needs |
+|---|---|
+| OAuth 2.1 instead of static tokens | Identity provider |
+| Encryption at rest for the SQLite file (or DynamoDB with KMS) | AWS account, cost approval |
+| Nitro Enclaves key-release proof of concept (section 6) | EC2 + KMS, cost approval |
+
 **Recommended next step:** keep the TEE out of the hackathon build. If there's appetite after submission, and you approve the EC2 and KMS costs, run the 4-step Nitro key-release proof of concept above in a sandbox account, and add this repository's results to this document only once they've been verified.

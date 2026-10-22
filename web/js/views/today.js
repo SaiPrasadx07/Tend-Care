@@ -13,15 +13,21 @@ function summarySentence(status, forecast) {
   const critical = forecast.filter((f) => f.urgency === "critical" && !f.openRefillRequest);
   const parts = [];
   if (due.length) parts.push(`${word(due.length)} ${due.length === 1 ? "dose is" : "doses are"} due now`);
-  if (missed.length) parts.push(`${word(missed.length).toLowerCase()} ${missed.length === 1 ? "was" : "were"} missed`);
+  if (missed.length) parts.push(`${word(missed.length).toLowerCase()} ${missed.length === 1 ? "dose was" : "doses were"} missed`);
   if (critical.length) parts.push(`${critical[0].personName}'s ${critical[0].medication.split(" ")[0]} runs out in ${plural(critical[0].daysLeft, "day")}`);
   if (status.pendingActions.length) parts.push(`${plural(status.pendingActions.length, "request")} ${status.pendingActions.length === 1 ? "is" : "are"} waiting for confirmation`);
   if (parts.length) {
     const s = listJoin(parts);
     return s[0].toUpperCase() + s.slice(1) + ".";
   }
+  // Low supply still shows under "Needs you now", so the headline mustn't call everything on track.
+  const pendingMeds = new Set(status.pendingActions.map((a) => a.medicationId).filter(Boolean));
+  const supply = forecast.filter((f) => f.urgency !== "ok" && !pendingMeds.has(f.medicationId)).length;
+  const lead = supply
+    ? `Today's doses are on track; ${word(supply).toLowerCase()} supply ${supply === 1 ? "item needs" : "items need"} attention.`
+    : "Everything is on track.";
   const next = all.filter((s) => s.state === "upcoming").sort((a, b) => a.time.localeCompare(b.time))[0];
-  return next ? `Everything is on track. Next up: ${hhmmLabel(next.time)} ${next.medication.split(" ")[0]} for ${next.person}.` : "Everything is on track. Nothing else is scheduled today.";
+  return next ? `${lead} Next up: ${hhmmLabel(next.time)} ${next.medication.split(" ")[0]} for ${next.person}.` : `${lead} Nothing else is scheduled today.`;
 }
 
 function actionButtons(slot, person, compact = false) {

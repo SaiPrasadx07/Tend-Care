@@ -64,6 +64,15 @@ describe("intent understanding", () => {
     ["I think Dad has a fever", "observation"],
     ["Dad felt dizzy after lunch", "observation"],
     ["Is Mom feeling okay?", "overview"],
+    ["No, I meant Mom", "correction"],
+    ["Actually Dad", "correction"],
+    ["Actually Dad took his amlodipine", "log_taken"],
+    ["What does Dad take?", "regimen"],
+    ["What meds is Mom on?", "regimen"],
+    ["Dad missed his morning dose, what should I do?", "missed_advice"],
+    ["What's the weather like?", "out_of_scope"],
+    ["Play some music", "out_of_scope"],
+    ["Remind me to give Dad his pills at 9", "out_of_scope"],
   ];
   for (const [text, intent] of cases) {
     test(`"${text}" → ${intent}`, () => assert.equal(classify(text, HOUSEHOLD).intent, intent));
@@ -394,6 +403,95 @@ describe("conversation over MCP (offline engine)", () => {
       assert.match(t.reply, /emergency number/);
       assert.match(t.reply, /988/);
       assert.deepEqual(t.tools.map((x) => x.name).filter((n) => n !== "list_care_recipients"), []);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("'what does Dad take?' lists his medicines; 'no, I meant Mom' asks the same thing about Mom", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const dad = await say("What does Dad take?");
+      assert.equal(dad.reply, "Dad takes Amlodipine 5 mg at 9 AM.");
+      const mom = await say("No, I meant Mom");
+      assert.equal(mom.reply, "Mom takes Metformin 500 mg at 8 AM and 8 PM.");
+      assert.deepEqual([...dad.tools, ...mom.tools].map((x) => x.name).filter((n) => n !== "list_care_recipients"), [], "read from the record, nothing written");
+      // A correction re-asks the last question, not a generic "Okay."
+      const st = await say("Did Dad take his pills?");
+      assert.match(st.reply, /Dad/);
+      const fix = await say("sorry, I meant Mom");
+      assert.equal(called(fix, "get_care_status")[0]?.arguments.person, "Lakshmi");
+      assert.match(fix.reply, /Mom|Metformin/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a correction right after a dose was logged never re-logs or claims an undo; it offers a note", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const logged = await say("I just gave Dad his amlodipine");
+      assert.equal(called(logged, "log_dose").length, 1);
+      const fix = await say("no, I meant Mom");
+      assert.equal(called(fix, "log_dose").length, 0, "nothing logged for Mom by inference");
+      assert.match(fix.reply, /already recorded for Dad, and I can't undo that by voice/);
+      assert.equal(called(fix, "add_care_note").length, 0, "the note waits for a yes");
+      const yes = await say("yes");
+      const note = called(yes, "add_care_note")[0];
+      assert.equal(note?.arguments.person, "Ravi");
+      assert.match(String(note?.arguments.text), /recorded for Dad by mistake; it was meant for Mom/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("an observation pinned on the wrong person is moved before anything is saved", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      await say("Dad is having a migraine");
+      const moved = await say("no, it's Mom who has the migraine");
+      assert.equal(called(moved, "add_care_note").length, 0);
+      assert.match(moved.reply, /Should I add “Mom is having a migraine” to her notes\?/);
+      const yes = await say("yes");
+      assert.deepEqual(called(yes, "add_care_note")[0]?.arguments, { person: "Lakshmi", text: "Mom is having a migraine", category: "symptom" });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("'Dad missed his dose, what should I do?' states the record, defers to the pharmacist, and logs only when told", async () => {
+    const h = await startHarness({ clockAt: ["2026-10-21", "14:00"] });
+    try {
+      const say = talker(h);
+      const ask = await say("Dad missed his morning dose, what should I do?");
+      assert.match(ask.reply, /^Dad's 9 AM Amlodipine hasn't been logged\./);
+      assert.match(ask.reply, /label or the pharmacist/);
+      assert.doesNotMatch(ask.reply, /\b(give it|take it now|double|skip it)\b/i, "no dosing instructions");
+      assert.equal(called(ask, "log_dose").length, 0);
+      const did = await say("he did take it");
+      assert.deepEqual(called(did, "log_dose")[0]?.arguments, { medication: "Amlodipine", person: "Ravi", status: "taken" });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("requests outside Tend get a clear boundary, not 'is that about Dad?' or the full help text", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      await say("Did Dad take his pills?");
+      for (const text of ["What's the weather like?", "Play some music", "Set a timer for ten minutes"]) {
+        const t = await say(text);
+        assert.match(t.reply, /Mom and Dad/, text);
+        assert.doesNotMatch(t.reply, /Is it about|still not following/, text);
+        assert.deepEqual(t.tools.map((x) => x.name).filter((n) => n !== "list_care_recipients"), [], text);
+      }
+      const rem = await say("Remind me to give Dad his pills at 9");
+      assert.match(rem.reply, /can't set reminders yet/);
+      assert.equal(called(rem, "log_dose").length, 0);
     } finally {
       await h.close();
     }

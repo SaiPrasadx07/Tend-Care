@@ -29,6 +29,16 @@ A kitchen smart speaker is where these questions are actually asked, often with 
 
 Every caregiver has their own identity (bearer token), so every record says **who** did it. A **view-only** role (e.g. a visiting nurse) can ask questions, but the server doesn't even list write tools to them.
 
+### What makes Tend different
+
+A medication tracker records one person's doses, and a chatbot answers questions. Tend is the **shared, attributed record a family's care circle coordinates through by voice**, and it is enforced on the server, not in the prompt:
+
+- **Two siblings can't double-dose Dad.** `log_dose` refuses a second "taken" for the same slot and says who logged the first one and when (`src/domain/care.ts`). This holds for any MCP client, including an LLM that misunderstands.
+- **The model can't approve its own actions.** A refill is prepared, then the host blocks `confirm_action` unless the user said yes *in this turn* to something offered *earlier* (`src/agent/agent.ts`).
+- **Roles are structural.** A view-only nurse's MCP session never lists write tools at all (`src/mcp/server.ts`).
+- **Honest about uncertainty.** "Did Dad take his pills?" answers from what was logged ("hasn't been logged, so I can't confirm he took it"), never from the schedule; caregiver feelings are never filed as patient notes; observations are saved only after a yes.
+- **One standard surface.** The same 13 MCP tools serve Alexa+, the web app, the MCP App views and any other MCP client.
+
 Tend **never gives medical advice**. The rule appears in the MCP server instructions, in the agent's system prompt and, optionally, as an **Amazon Bedrock Guardrail** denied topic.
 
 ## How the Alexa+ track requirement is met
@@ -211,7 +221,7 @@ All settings are environment variables; see [`.env.example`](.env.example).
 ```bash
 npm start              # server + caregiver app
 npm run dev            # same, restarts on file changes
-npm test               # 111 automated tests (node:test)
+npm test               # 125 automated tests (node:test)
 npm run typecheck      # tsc --noEmit (strict)
 npm run check          # both
 npm run seed           # reset the local DB to the demo household
