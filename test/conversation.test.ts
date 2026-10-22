@@ -73,6 +73,25 @@ describe("intent understanding", () => {
     ["What's the weather like?", "out_of_scope"],
     ["Play some music", "out_of_scope"],
     ["Remind me to give Dad his pills at 9", "out_of_scope"],
+    // The caregiver clarifying that something is about themselves.
+    ["nah its my feeling", "self_clarify"],
+    ["No, it's me", "self_clarify"],
+    ["I'm talking about myself", "self_clarify"],
+    ["Not Mom or Dad", "self_clarify"],
+    ["I am suffering from migraine", "self_feeling"],
+    // Symptom phrasing, including speech-to-text slips.
+    ["dad is suffering from migrain as well", "observation"],
+    ["Dad is suffering from migraine", "observation"],
+    ["Dad has a migraine.", "observation"],
+    ["DAD HAS A MIGRAINE", "observation"],
+    ["Dad has been having headaches", "observation"],
+    ["My dad is suffering from migraine", "observation"],
+    ["my mom is feeling low", "observation"],
+    // Nearby phrases that are not symptoms or self-clarifications.
+    ["Dad is having lunch", "followup"],
+    ["Did Dad take his migraine tablet?", "status"],
+    ["It's my dad", "followup"],
+    ["I gave Dad his amlodipine", "log_taken"],
   ];
   for (const [text, intent] of cases) {
     test(`"${text}" → ${intent}`, () => assert.equal(classify(text, HOUSEHOLD).intent, intent));
@@ -492,6 +511,78 @@ describe("conversation over MCP (offline engine)", () => {
       const rem = await say("Remind me to give Dad his pills at 9");
       assert.match(rem.reply, /can't set reminders yet/);
       assert.equal(called(rem, "log_dose").length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("regression: 'nah its my feeling' after a disclosure stays about the caregiver; 'dad' can't save it as Dad's note", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const first = await say("i am feeling depressed");
+      assert.match(first.reply, /haven't added anything to the care record/);
+      const clarify = await say("nah its my feeling");
+      assert.doesNotMatch(clarify.reply, /Who is that about|Mom or Dad\?/, clarify.reply);
+      assert.match(clarify.reply, /that's about you, not Mom or Dad, so I haven't saved anything/);
+      assert.doesNotMatch(clarify.reply, /diagnos|depression is/i, "no diagnosis");
+      const dad = await say("dad");
+      assert.equal(called(dad, "add_care_note").length, 0, "nothing saved");
+      assert.doesNotMatch(dad.reply, /my feeling|Should I add/i, dad.reply);
+      const all = [first, clarify, dad].flatMap((t) => t.tools.map((x) => x.name));
+      assert.ok(!all.some((n) => ["add_care_note", "log_dose", "request_refill", "confirm_action"].includes(n)), all.join(","));
+      // A separate care statement afterwards is a new observation, asked about normally.
+      const migraine = await say("Dad is suffering from migrain as well");
+      assert.match(migraine.reply, /Should I add “Dad is suffering from migraine” to his notes/);
+      const yes = await say("yes");
+      assert.deepEqual(called(yes, "add_care_note")[0]?.arguments, { person: "Ravi", text: "Dad is suffering from migraine", category: "symptom" });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("self-clarifications drop a pending 'who is it about?' or note question without saving", async () => {
+    const h = await startHarness();
+    try {
+      for (const clarify of ["no, it's me", "I'm talking about myself", "not Mom or Dad"]) {
+        const say = talker(h);
+        const ask = await say("feeling really low today");
+        assert.match(ask.reply, /Who is that about, Mom or Dad\?/, "no context yet, so asking who is right");
+        const c = await say(clarify);
+        assert.match(c.reply, /that's about you/, clarify);
+        const after = await say("Dad");
+        assert.equal(called(after, "add_care_note").length, 0, clarify);
+        assert.doesNotMatch(after.reply, /Should I add/, clarify);
+      }
+      // A pending note confirmation is dropped too, even though Mom and Dad are named.
+      const say = talker(h);
+      await say("Mom seems confused today");
+      const c = await say("not Mom or Dad, it's me");
+      assert.equal(called(c, "add_care_note").length, 0);
+      const yes = await say("yes");
+      assert.equal(called(yes, "add_care_note").length, 0, "the dropped note can't be confirmed later");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("regression: 'dad is suffering from migrain as well' asks first, saves on yes, saves nothing on no", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const ask = await say("dad is suffering from migrain as well");
+      assert.equal(ask.reply.includes("outside what I can do") || ask.reply.includes("didn't follow"), false, ask.reply);
+      assert.match(ask.reply, /Should I add “Dad is suffering from migraine” to his notes so the care circle knows\?/);
+      assert.doesNotMatch(ask.reply, /doctor has been|contacted|take (a|an|some)|dose/i, "no advice, no implied clinician contact");
+      assert.equal(called(ask, "add_care_note").length, 0);
+      const yes = await say("yes");
+      assert.deepEqual(called(yes, "add_care_note")[0]?.arguments, { person: "Ravi", text: "Dad is suffering from migraine", category: "symptom" });
+      assert.match(yes.reply, /^Added to Dad's notes\./);
+      const say2 = talker(h);
+      await say2("Dad has been having headaches");
+      const no = await say2("no");
+      assert.equal(called(no, "add_care_note").length, 0);
+      assert.equal(no.reply, "Okay, I haven't saved it.");
     } finally {
       await h.close();
     }

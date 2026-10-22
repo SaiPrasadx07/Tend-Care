@@ -5,7 +5,7 @@
 // MCP tool results. Every read and write is a real MCP tools/call, so the
 // server's permission and safety rules still apply.
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { AFFIRMATIVE, NEGATIVE, REMINDER, SYMPTOM, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
+import { AFFIRMATIVE, NEGATIVE, REMINDER, SYMPTOM, aboutSpeaker, classify, scopeOf, type Day, type Entities, type Focus, type HouseholdPerson, type TimeScope, type Understanding } from "./intent.ts";
 
 export { AFFIRMATIVE, NEGATIVE, parseSlotTime } from "./intent.ts";
 
@@ -36,6 +36,8 @@ export interface OfflineSession {
   lastAsk?: { intent: Understanding["intent"]; timeScope?: TimeScope; focus?: Focus; day?: Day; med?: string };
   /** The last record written, and on which turn, so a correction right after it isn't silently ignored. */
   lastWrite?: { person: string; what: string; turn: number };
+  /** Turn on which the caregiver last talked about their own feelings, so a follow-up isn't pinned on Mom or Dad. */
+  selfAt?: number;
   /** Words the user uses for people ("Mom"), so replies mirror their language. */
   words: Record<string, string>;
   pending?: Pending;
@@ -485,6 +487,8 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
    * never attributed to a care recipient; no tools are called.
    */
   function selfFeeling(): OfflineReply {
+    session.selfAt = session.turns;
+    session.lastIntent = "self_feeling";
     if (e.crisis) {
       return {
         reply: "I'm really glad you told me, and I'm sorry you're carrying this. I can't help in an emergency, so if you might hurt yourself, please call your local emergency number now, or in the US call or text 988 to reach the Suicide & Crisis Lifeline. If you can, reach out to someone you trust right now too.",
@@ -510,13 +514,38 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
   }
 
   /**
+   * "No, it's my feeling": the caregiver is talking about themselves. Any pending
+   * question about Mom or Dad is dropped, nothing is saved and no tools are called.
+   */
+  function selfClarify(): OfflineReply {
+    const recent = session.selfAt !== undefined && session.turns - session.selfAt <= 3;
+    session.selfAt = session.turns;
+    session.lastIntent = "self_feeling";
+    session.pending = { type: "offer_checkin" };
+    const lead = `Got it, that's about you, not ${orList(everyoneWords())}, so I haven't saved anything.`;
+    if (!recent) return { reply: `${lead} How are you doing? If there's something with ${listJoin(everyoneWords())}'s care I can take off your plate, just say.` };
+    // The disclosure reply already suggested talking to someone; don't repeat it.
+    const care = pick(["I hear you, and I'm sorry it's been so heavy.", "Thank you for telling me. How you're feeling matters too."]);
+    return { reply: `${lead} ${care} Want me to check what's left today, so you know what can wait?` };
+  }
+
+  /** Speech-to-text and typing slips in symptom words, fixed before a note is shown for confirmation. */
+  const tidySymptoms = (s: string) => s.replace(/\bmigrain\b/gi, "migraine").replace(/\bheadach\b/gi, "headache");
+
+  /**
    * Someone in the care circle seems unwell or different. Observations are only
    * saved after the caregiver says yes, and only reported as saved once the server confirms.
    */
   function observation(): OfflineReply {
+    // Never file the caregiver's own words ("nah it's my feeling") as a note on someone else's record.
+    if (aboutSpeaker(sourceText, household)) return selfClarify();
+    const recentSelf = session.selfAt !== undefined && session.turns - session.selfAt <= 2;
     const person = e.people[0] ?? (e.pronoun ? session.person : undefined) ?? (household.length === 1 ? household[0]!.name : undefined);
+    // Right after talking about themselves, a sentence with no subject ("feeling low") is still about them.
+    if (!person && recentSelf) return selfClarify();
     if (!person) {
-      const symptom = /\b(migraine|headache|fever|cough|rash|pain|nause\w*|dizz\w*)\b/.exec(u.normalized)?.[0];
+      const found = /\b(migraine?s?|headache?s?|fever|cough|rash|pain|nause\w*|dizz\w*)\b/.exec(u.normalized)?.[0];
+      const symptom = found && tidySymptoms(found);
       session.pending = { type: "which_person", intent: "observation", entities: e, candidates: household.map((p) => p.name), text: sourceText };
       return { reply: `Who ${symptom ? `has the ${symptom}` : "is that about"}, ${orList(everyoneWords())}?` };
     }
@@ -524,7 +553,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
     // Keep the caregiver's own words, minus filler like "as well".
     const clean = sourceText.replace(/^\s*(hey |ok )?alexa[,.!\s]*/i, "").replace(/[,\s]+(as well|too|also)\s*([.!?]*)$/i, "$2").replace(/[.!?\s]+$/, "").trim();
     // A note is read later without this conversation, so "She has a headache" is saved as "Mom has a headache".
-    const named = clean.replace(/^(she|he)\b/i, ref(person));
+    const named = tidySymptoms(clean).replace(/^(she|he)\b/i, ref(person));
     const quoted = named.charAt(0).toUpperCase() + named.slice(1);
     session.pending = { type: "confirm_note", person, text: quoted, category: noteCategory(sourceText) };
     const urgent = /\b(fell|fall|chest pain|can't breathe|cannot breathe|short of breath|breathless|unconscious|passed out|fainted|slurr\w*|stroke)\b/.test(u.normalized)
@@ -715,6 +744,8 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       }
       case "self_feeling":
         return selfFeeling();
+      case "self_clarify":
+        return selfClarify();
       case "observation":
         return observation();
       case "followup": {
@@ -766,7 +797,8 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
   // ---------- pending clarifications take priority ----------
   const pending = session.pending;
   session.pending = undefined;
-  if (pending) {
+  // "No, it's me" overrides any open question about Mom or Dad (who it's for, or whether to save a note).
+  if (pending && u.intent !== "self_clarify") {
     switch (pending.type) {
       case "refill_confirm":
         if (u.intent === "affirm" || u.intent === "deny") {

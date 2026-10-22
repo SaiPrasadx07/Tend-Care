@@ -41,6 +41,7 @@ export type Intent =
   | "overview"
   | "self_feeling"
   | "observation"
+  | "self_clarify"
   | "correction"
   | "regimen"
   | "missed_advice"
@@ -182,9 +183,18 @@ export function extractEntities(text: string, household: HouseholdPerson[]): Ent
 }
 
 /** How someone is: symptoms and wellbeing observations (about a care recipient or the speaker). */
-export const SYMPTOM = /\b(felt|feeling|feels|feel|seems|seemed|looks|looked|complain(ed|ing|s)?|dizzy|tired|exhausted|pain|ache|aches|aching|headache|migraine|nause\w*|vomit\w*|threw up|fever|cough\w*|cold|flu|sick|unwell|ill|fell|fall|confused|sleepy|drowsy|weak|breathless|short of breath|rash|swollen|swelling|sore|depressed|anxious|sad|low|down|upset|agitated|stressed|overwhelmed|worried|lonely|scared|frustrated|struggling|can't sleep|couldn't sleep|insomnia|not (eating|sleeping)|off (her|his|their) food)\b/;
+export const SYMPTOM = /\b(felt|feeling|feels|feel|seems|seemed|looks|looked|complain(ed|ing|s)?|dizzy|tired|exhausted|pain|ache|aches|aching|headache?s?|head ?aches?|migraine?s?|suffer(s|ed|ing)? (from|with)|nause\w*|vomit\w*|threw up|fever|cough\w*|cold|flu|sick|unwell|ill|fell|fall|confused|sleepy|drowsy|weak|breathless|short of breath|rash|swollen|swelling|sore|depressed|anxious|sad|low|down|upset|agitated|stressed|overwhelmed|worried|lonely|scared|frustrated|struggling|can't sleep|couldn't sleep|insomnia|not (eating|sleeping)|off (her|his|their) food)\b/;
 /** The speaker talking about themselves ("I am feeling depressed"), not about the person they care for. */
 const FIRST_PERSON = /^(honestly,? |to be honest,? |tbh,? |just )?(i|i'm|im|i am|i've|ive|i have|i feel|i've been|i was|i get|i keep|me|my)\b/;
+/** Conversational openers that don't change who a sentence is about: "nah it's my feeling", "well I'm tired". */
+const DISCOURSE = /^((nah|naw|no|nope|well|um+|uh+|oh|hmm+|yeah|ok|okay|so|honestly)[,.!]?\s+)+/;
+/**
+ * The caregiver saying the subject is themselves, usually to correct Tend:
+ * "no, it's me", "it's my feeling", "I'm talking about myself".
+ */
+const SELF_REF = /\b((it'?s|its|that'?s|thats|it was|this is) (just |about |all )?(me|mine|myself)|(i meant|i mean|i'?m talking about|im talking about|talking about|about) (me|myself)|my (own )?(feelings?|emotions?|mood|problem|stuff)|(it'?s|its|that'?s|thats) (just )?how i feel)\b/;
+/** "Not Mom or Dad", "neither of them": only meaningful when someone is named or referred to. */
+const NOT_THEM = /\b(not (about )?(\w+ )?(or|nor) \w+|not about (him|her|them)|neither( of them)?)\b/;
 const REPORTING = /^i (think|noticed|notice|saw|feel like|reckon|guess|just noticed|found)\b/;
 const CRISIS = /\b(kill (myself|me)|suicid\w*|end (it all|my life|things)|hurt(ing)? myself|self[- ]harm|don't want to (live|be here|go on)|no reason to live|better off without me)\b/;
 const QUESTION = /^(did|has|have|what|what's|when|is|are|how|who|which|can|could|do|does|will|should|tell me|show me|any)\b/;
@@ -203,6 +213,17 @@ const WHAT_TO_DO = /\b(what (should|do|can) (i|we) do|what now|should (i|we)|can
 const OUT_OF_SCOPE = /\b(weather|raining|temperature outside|music|song|songs|playlist|podcast|radio|news|headlines|timer|alarm|joke|lights?|thermostat|recipe|traffic|movie|sports?|score|shopping list|spotify)\b|^(play|call|text|order|buy|turn (on|off))\b/;
 export const REMINDER = /\b(remind me|set a reminder|reminders?)\b/;
 
+/**
+ * True when a sentence is about the speaker rather than a care recipient, so it must never become a note
+ * on someone's record. "My dad has a migraine" is about Dad, not the speaker.
+ */
+export function aboutSpeaker(text: string, household: HouseholdPerson[]): boolean {
+  const t = normalize(text).replace(DISCOURSE, "");
+  const e = extractEntities(text, household);
+  if (e.people.length && !NOT_THEM.test(t)) return false;
+  return SELF_REF.test(t) || NOT_THEM.test(t) || (FIRST_PERSON.test(t) && !e.pronoun);
+}
+
 export function classify(text: string, household: HouseholdPerson[]): Understanding {
   let t = normalize(text);
   const e = extractEntities(text, household);
@@ -215,13 +236,18 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   }
   const has = (re: RegExp) => re.test(t);
   const short = t.split(" ").length <= 4;
+  // Who the sentence is about, ignoring openers like "nah". "My dad has a migraine" is about Dad.
+  const core = t.replace(DISCOURSE, "");
+  const speaker = FIRST_PERSON.test(core) && !(/^my\b/.test(core) && e.people.length > 0);
 
   let intent: Intent = "unknown";
   const advice = e.question
     && has(/\b(should|is it (ok|okay|safe|fine)|can (she|he|they|i|we|mom|dad)|okay to|safe to|what if)\b/)
     && has(/\b(skip|stop|double|two|extra|cut|half|increase|reduce|change|mix|together|instead|more|less)\b/);
   const writeVerb = has(/\b(took|taken|gave|given|skipped|refused|note|refill|reorder|picked up)\b/);
-  if (CORRECTION.test(t) && e.people.length > 0 && t.split(" ").length <= 7 && !writeVerb && !has(SYMPTOM)) intent = "correction";
+  if (e.crisis) intent = "self_feeling";
+  else if (!writeVerb && (SELF_REF.test(core) || (NOT_THEM.test(core) && (e.people.length > 0 || e.pronoun)))) intent = "self_clarify";
+  else if (CORRECTION.test(t) && e.people.length > 0 && t.split(" ").length <= 7 && !writeVerb && !has(SYMPTOM)) intent = "correction";
   else if (advice) intent = "advice";
   else if (has(MISSED_ADVICE) && has(WHAT_TO_DO)) intent = "missed_advice";
   else if (has(REMINDER)) intent = "out_of_scope";
@@ -233,7 +259,7 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   // The caregiver's own feelings are never a care-recipient note. A named person
   // ("I'm worried about Mom") makes it about them; a symptom about them is an observation.
   // "I'm worried about Mom" is still the caregiver's own feeling; "I think Dad has a fever" reports on Dad.
-  else if (e.crisis || (FIRST_PERSON.test(t) && !REPORTING.test(t) && has(SYMPTOM) &&!has(/\b(note|took|gave|given|skipped|refill)\b/))) intent = "self_feeling";
+  else if ((speaker && !REPORTING.test(core) && has(SYMPTOM) && !has(/\b(note|took|gave|given|skipped|refill)\b/))) intent = "self_feeling";
   else if (has(OUT_OF_SCOPE) && !e.people.length && !e.meds.length && !MED_WORDS.test(t)) intent = "out_of_scope";
   else if (has(REGIMEN) && !e.meds.length && !e.day && !e.timeScope && !e.focus) intent = "regimen";
   else if (has(/^(what about|how about|and( what about)?|what of)\b/) || (short && t.startsWith("and "))) intent = "followup";
@@ -243,7 +269,7 @@ export function classify(text: string, household: HouseholdPerson[]): Understand
   else if (has(/\b(skip|skipped|refused|didn't take|did not take|won't take|wouldn't take)\b/) && !e.question) intent = "log_skipped";
   else if (has(/\b(took|taken|take[sn]? (it|them)|gave|given|had (her|his|their|the)|swallowed|finished)\b/) && !e.question) intent = "log_taken";
   else if (has(/\bappointment\b/) && !e.question) intent = "note";
-  else if (has(SYMPTOM) && !e.question && !FIRST_PERSON.test(t)) intent = "observation";
+  else if (has(SYMPTOM) && !e.question && !speaker) intent = "observation";
   else if (has(SYMPTOM) && !e.question && (e.people.length || e.pronoun)) intent = "observation";
   else if (has(/\b(handoff|hand off|hand over|summary|summarize|report|recap|catch me up|this week|past week|last week|how has .* been|how was .* week)\b/)) intent = "handoff";
   else if (has(OVERVIEW) && e.meds.length === 0 && !has(/\b(run out|running (out|low)|supply|stock|refill)\b/)) intent = "overview";
