@@ -19,8 +19,12 @@
 | 1:55–2:10 | **"Yes, go ahead."** | Confirmed, with the pharmacy message drafted. "Consequential actions are two-step, and the host, not the model, enforces the yes. Our tests include a model trying to confirm on its own; it gets blocked." |
 | 2:10–2:25 | **"Note that Dad felt dizzy after lunch."** then **"Give me the handoff for this week."** | The handoff card shows adherence bars, missed doses and the note. |
 | 2:25–2:35 | (If a guardrail is configured) **"Dad's dizzy, should he skip his blood pressure pill?"** | The Bedrock Guardrail refuses medical advice and points to the pharmacist. (Without a guardrail, the system prompt still declines; say that instead.) |
-| 2:35–2:45 | Switch to **Nurse Maria**: **"Mom took her metformin."** | Refused: view-only. Show the view-only banner, then flash **Developer → Tools** (annotations, MCP App badges) and a terminal showing `npm test`: **125 passing**. |
+| 2:35–2:45 | Switch to **Nurse Maria**: **"Mom took her metformin."** | Refused: view-only. Show the view-only banner, then flash **Developer → Tools** (annotations, MCP App badges) and a terminal showing `npm test`: **147 passing**. |
 | 2:45–2:55 | End card: repo URL, "MCP 2025-11-25 · Streamable HTTP · Amazon Bedrock · MCP Apps" | "Tend: one shared memory for the people who care." |
+
+**If you record without AWS credentials** (header shows **Offline router (no LLM)**): replace "its reasoning runs on Amazon Bedrock" with "here it's running Tend's offline router, with no language model; with AWS credentials the same MCP tools are driven by Amazon Bedrock." Skip the guardrail beat, and don't claim the AWS Builder integration was verified live.
+
+**Optional 20-second beat on caregiver wellbeing** (verified in the offline router): say **"Hey, I am sad."** then **"Nah, it's just my feeling."** Alexa responds warmly and says nothing was saved. Then **"Dad is suffering from migraine as well."** It asks before saving; say **"Yes"**, then show the note on People under Dad, and that your own feeling appears nowhere. "Tend never files the caregiver's feelings as a patient record, and saves observations only after a yes."
 
 **Fallbacks:** if voice recognition misfires, type the line (it's the same pipeline). If Bedrock is unavailable, the app falls back to the offline router and shows a yellow note. Re-record that take rather than shipping it, because the AWS story depends on Bedrock being visible.
 

@@ -221,7 +221,7 @@ All settings are environment variables; see [`.env.example`](.env.example).
 ```bash
 npm start              # server + caregiver app
 npm run dev            # same, restarts on file changes
-npm test               # 125 automated tests (node:test)
+npm test               # 147 automated tests (node:test)
 npm run typecheck      # tsc --noEmit (strict)
 npm run check          # both
 npm run seed           # reset the local DB to the demo household

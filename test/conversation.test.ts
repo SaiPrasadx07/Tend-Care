@@ -588,6 +588,56 @@ describe("conversation over MCP (offline engine)", () => {
     }
   });
 
+  test("sad → 'just my feeling' → Dad's migraine → yes: only Dad's observation is saved", async () => {
+    const h = await startHarness();
+    try {
+      const say = talker(h);
+      const turns = [await say("Hey, I am sad."), await say("Nah, it's just my feeling.")];
+      assert.match(turns[1]!.reply, /that's about you/);
+      const ask = await say("Dad is suffering from migraine as well.");
+      assert.match(ask.reply, /Should I add “Dad is suffering from migraine” to his notes/);
+      const yes = await say("yes");
+      turns.push(ask, yes);
+      const notes = turns.flatMap((t) => called(t, "add_care_note"));
+      assert.equal(notes.length, 1, "exactly one note, the observation");
+      assert.deepEqual(notes[0]!.arguments, { person: "Ravi", text: "Dad is suffering from migraine", category: "symptom" });
+      const report = await talker(h)("Give me the handoff for this week");
+      assert.doesNotMatch(report.reply, /sad|my feeling/i);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a new request that names someone isn't swallowed by a pending note or 'who?' question", async () => {
+    const h = await startHarness();
+    try {
+      // Pending "Should I add Dad has a headache?" then a question about Mom.
+      let say = talker(h);
+      await say("Dad has a headache");
+      const q = await say("Did Mom take her metformin?");
+      assert.doesNotMatch(q.reply, /Should I add/, q.reply);
+      assert.equal(called(q, "get_care_status")[0]?.arguments.person, "Lakshmi");
+      // Pending note, then a dose report about Mom: the dose is logged, the note is not retargeted.
+      say = talker(h);
+      await say("Dad has a headache");
+      const log = await say("Mom took her metformin");
+      assert.equal(called(log, "log_dose")[0]?.arguments.person, "Lakshmi");
+      assert.equal(called(log, "add_care_note").length, 0);
+      // Pending "Is that note for Mom or Dad?", then a question naming Mom: not answered as "Mom".
+      say = talker(h);
+      await say("Note that she is dizzy");
+      const q2 = await say("Did Mom take her metformin?");
+      assert.equal(called(q2, "add_care_note").length, 0, "the note isn't filed for Mom by a question");
+      // A real correction still works.
+      say = talker(h);
+      await say("Dad has a headache");
+      const fix = await say("no, it's Mom");
+      assert.match(fix.reply, /Should I add “Mom has a headache” to her notes\?/);
+    } finally {
+      await h.close();
+    }
+  });
+
   test("medical advice is declined without touching the record", async () => {
     const h = await startHarness();
     try {
@@ -621,6 +671,12 @@ describe("dialogue manager with a failing tool layer", () => {
   test("an unreachable care record is reported, not papered over", async () => {
     const r = await runOffline("What's due today?", newOfflineSession(), async () => fail("TOOL_ERROR: fetch failed"), { timezone: "UTC", actorName: "Priya" });
     assert.match(r.reply, /^I couldn't reach the care record just now\./);
+  });
+
+  test("speech sets quoted note text apart with pauses", () => {
+    assert.equal(toSpeech("Should I add “Dad has a headache” to his notes so the care circle knows?"), "Should I add, Dad has a headache, to his notes so the care circle knows?");
+    assert.equal(toSpeech("For example: “Did Dad take his pills?”"), "For example: Did Dad take his pills?");
+    assert.equal(toSpeech("Should I add “Mom is tired”?"), "Should I add, Mom is tired?");
   });
 
   test("speech expands units and tidies times", () => {

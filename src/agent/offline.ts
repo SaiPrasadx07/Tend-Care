@@ -100,6 +100,10 @@ export function toSpeech(text: string): string {
     .replace(/\b(\d+(?:\.\d+)?)\s?mcg\b/gi, "$1 micrograms")
     .replace(/\b(\d+(?:\.\d+)?)\s?ml\b/gi, "$1 milliliters")
     .replace(/\b(\d{1,2}):00\s?(AM|PM)\b/g, "$1 $2")
+    // Quoted text (a note to save) is heard with short pauses around it: "Should I add, Dad has a headache, to his notes?"
+    .replace(/(:?)\s*“([^”]+)”([.,!?]?)/g, (_m, colon: string, q: string, after: string) =>
+      `${colon ? ":" : ","} ${q}${after || (/[.!?]$/.test(q) ? "" : ",")}`)
+    .replace(/,\s*$/, "")
     .replace(/[“”"]/g, "")
     .replace(/\s+—\s+/g, ", ")
     .replace(/\s+/g, " ")
@@ -374,7 +378,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       if (!soFar.length) parts.push(`Not yet; ${poss(person)} first ${short(label)} dose today is at ${t12(slots[0]!.time)}`);
       else {
         const lead = open.length ? (given.length ? "Partly" : "Not that I can see") : "Yes";
-        if (given.length) parts.push(`${lead}. The ${listJoin(given.map((s) => `${t12(s.time)} dose was logged as given${s.recordedAt ? ` at ${clock(s.recordedAt)}` : ""}${s.loggedBy ? ` by ${s.loggedBy}` : ""}`))}`);
+        if (given.length) parts.push(`${lead}. ${cap(listJoin(given.map((s) => `the ${t12(s.time)} dose was logged as given${s.recordedAt ? ` at ${clock(s.recordedAt)}` : ""}${s.loggedBy ? ` by ${s.loggedBy}` : ""}`)))}`);
         if (open.length) parts.push(`${given.length ? "" : `${lead}. `}The ${listJoin(open.map((s) => t12(s.time)))} dose ${open.length === 1 ? "hasn't" : "haven't"} been logged, so I can't confirm ${subj(person)} took it`);
         const skipped = soFar.filter((s) => s.state === "skipped");
         if (skipped.length) parts.push(`The ${listJoin(skipped.map((s) => t12(s.time)))} dose was marked skipped`);
@@ -797,6 +801,14 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
   // ---------- pending clarifications take priority ----------
   const pending = session.pending;
   session.pending = undefined;
+  /**
+   * Whether a message naming someone is an answer to "who?" ("Mom", "no, it's Mom who has it")
+   * rather than a new request that happens to name them ("Did Mom take her metformin?").
+   */
+  const answersWho = (expectedMeds: { name: string }[]) =>
+    !e.question
+    && !["log_taken", "log_skipped", "refill_request", "pickup", "note", "advice", "missed_advice"].includes(u.intent)
+    && e.meds.every((m) => expectedMeds.some((x) => x.name === m.name));
   // "No, it's me" overrides any open question about Mom or Dad (who it's for, or whether to save a note).
   if (pending && u.intent !== "self_clarify") {
     switch (pending.type) {
@@ -827,7 +839,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
         if (u.intent === "deny") return { reply: "Okay, I won't record anything. Let me know once you've checked." };
         break;
       case "which_person": {
-        const chosen = e.people.find((p) => pending.candidates.includes(p));
+        const chosen = answersWho(pending.entities.meds) ? e.people.find((p) => pending.candidates.includes(p)) : undefined;
         if (chosen) {
           sourceText = pending.text;
           // Re-run the original request with the person now explicit.
@@ -851,7 +863,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
           return { reply: `Added to ${poss(pending.person)} notes. The care circle will see it in the next handoff.` };
         }
         // "No, it's Mom who has the migraine": same observation, different person. Ask again; still nothing saved.
-        if (e.people[0] && e.people[0] !== pending.person && !pending.fixed) {
+        if (e.people[0] && e.people[0] !== pending.person && !pending.fixed && answersWho([])) {
           const to = e.people[0];
           const text = pending.text.startsWith(ref(pending.person)) ? ref(to) + pending.text.slice(ref(pending.person).length) : pending.text;
           session.pending = { ...pending, person: to, text };
