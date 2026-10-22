@@ -92,6 +92,8 @@ export interface PendingActionView {
   summary: string;
   createdBy: string;
   expiresAt: string;
+  /** The medication a refill action is about, so UIs can show it next to that medication. */
+  medicationId: string | null;
 }
 
 export interface StatusResult {
@@ -582,7 +584,13 @@ export class CareService {
   }
 
   private pendingView(row: PendingActionRow): PendingActionView {
-    return { actionId: row.id, type: row.type, summary: row.summary, createdBy: row.created_by, expiresAt: row.expires_at };
+    let medicationId: string | null = null;
+    try {
+      medicationId = (JSON.parse(row.payload) as { medicationId?: string }).medicationId ?? null;
+    } catch {
+      medicationId = null;
+    }
+    return { actionId: row.id, type: row.type, summary: row.summary, createdBy: row.created_by, expiresAt: row.expires_at, medicationId };
   }
 
   listPendingActions(): PendingActionView[] {

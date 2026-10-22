@@ -1,12 +1,32 @@
 // The Alexa+ companion: a simulated Alexa+ surface whose host agent talks to
-// Tend over MCP. Replies can carry MCP Apps cards, rendered here through the
-// spec's sandbox proxy, and every turn refreshes the caregiver dashboard.
+// Tend over MCP. The orb reflects only real events (microphone, request in
+// flight, speech playing). Replies can carry MCP Apps cards, rendered through
+// the spec's sandbox proxy, and every turn refreshes the caregiver dashboard.
 import { state, agentTurn, resetAgent, refresh, client, actor, canWrite } from "./api.js";
 import { h, icon, toast } from "./ui.js";
+import { createOrb } from "./orb.js";
 
 let els;
+let orb;
 let busy = false;
+let lastText = "";
 let sessionId = newId();
+let speaking = false;
+
+// What a caregiver needs to know about each tool, in their language.
+const ACTIVITY = {
+  get_care_status: "Checked today's doses",
+  forecast_refills: "Checked supply",
+  get_handoff_report: "Read the handoff report",
+  get_recent_activity: "Checked recent activity",
+  log_dose: "Updated the dose record",
+  request_refill: "Prepared a refill request",
+  confirm_action: "Confirmed the request",
+  cancel_action: "Cancelled the request",
+  record_refill_pickup: "Updated supply",
+  add_care_note: "Saved a note",
+  add_medication: "Added a medication",
+};
 
 function newId() {
   const a = new Uint8Array(12);
@@ -15,33 +35,68 @@ function newId() {
 }
 
 export function newSession() {
+  stopSpeaking();
   void resetAgent(sessionId);
   sessionId = newId();
-  if (els) els.transcript.replaceChildren(emptyState());
+  if (els) {
+    els.transcript.replaceChildren(emptyState());
+    renderSuggestions();
+  }
+}
+
+function engineLabel() {
+  const cfg = state.config;
+  return cfg.engine === "bedrock" ? `Amazon Bedrock${cfg.guardrail ? " + Guardrails" : ""}` : "offline router, no LLM";
+}
+
+function setOrb(next) {
+  orb.set(next);
+  els.orbBtn.dataset.state = next;
+  const text = {
+    idle: `Ready · ${engineLabel()}`,
+    listening: "Listening…",
+    thinking: "Checking the care record…",
+    speaking: "Speaking…",
+    success: `Ready · ${engineLabel()}`,
+    error: "Couldn't complete that",
+    unavailable: "Unavailable",
+  }[next];
+  els.status.textContent = text;
+  els.status.dataset.state = next;
+  els.stop.hidden = next !== "speaking";
+}
+
+/** Transient acknowledgement (success/error) that returns to rest unless something else took over. */
+function flashOrb(next, ms = 1400) {
+  setOrb(next);
+  setTimeout(() => { if (orb.state === next) setOrb("idle"); }, ms);
 }
 
 function emptyState() {
+  const big = createOrb(96);
   return h("div", { class: "rail-empty" },
-    h("div", { class: "display" }, "“Alexa, did Mom take her pills?”"),
-    h("p", {}, "Ask out loud or type. Alexa answers from Tend's shared care record and can log doses, track supply and request refills, always as you."));
+    big.el,
+    h("div", { class: "display" }, "How can I help with today's care?"),
+    h("p", {}, "Ask out loud or type. Answers come from Tend's shared care record, and anything I change is saved as you."));
 }
 
 function suggestions() {
   const d = state.data;
   const out = [];
   const alias = (name) => d?.recipients.find((r) => r.name === name)?.aliases[0] ?? name;
+  const poss = (name) => ({ Mom: "her", Dad: "his" }[alias(name)] ?? "their");
   if (d) {
-    const pending = d.status.pendingActions[0];
-    if (pending) out.push("Yes, go ahead");
+    if (d.status.pendingActions[0] && canWrite()) out.push("Yes, go ahead");
     const open = d.status.people.flatMap((p) => p.slots.filter((s) => s.state === "due" || s.state === "missed").map((s) => ({ p: p.name, s })))[0];
-    if (open && canWrite()) out.push(`I just gave ${alias(open.p)} ${alias(open.p) === "Mom" ? "her" : alias(open.p) === "Dad" ? "his" : "the"} ${open.s.medication.split(" ")[0].toLowerCase()}`);
-    out.push(`Did ${alias(d.recipients[0]?.name)} take ${alias(d.recipients[0]?.name) === "Dad" ? "his" : "her"} pills today?`);
-    const crit = d.forecast.find((f) => f.urgency !== "ok" && !f.openRefillRequest);
+    if (open && canWrite()) out.push(`I just gave ${alias(open.p)} ${poss(open.p)} ${open.s.medication.split(" ")[0].toLowerCase()}`);
+    const first = d.recipients[0]?.name;
+    if (first) out.push(`What does ${alias(first)} need to take today?`);
+    const crit = d.forecast.find((f) => f.urgency !== "ok" && !f.openRefillRequest && f.refillsRemaining > 0);
     if (crit && canWrite()) out.push(`Reorder ${alias(crit.personName)}'s ${crit.medication.split(" ")[0].toLowerCase()}`);
   }
-  out.push("When will we run out of anything?", "Give me the handoff for this week");
-  if (canWrite()) out.push("Note that Dad felt dizzy after lunch");
-  return [...new Set(out)].slice(0, 4);
+  out.push("Is anything running low?", "Give me this week's handoff");
+  const started = els?.transcript.querySelector(".turn-u");
+  return [...new Set(out)].slice(0, started ? 3 : 4);
 }
 
 export function renderSuggestions() {
@@ -51,53 +106,88 @@ export function renderSuggestions() {
 
 function addUser(text) {
   els.transcript.querySelector(".rail-empty")?.remove();
-  els.transcript.append(h("div", { class: "turn-u" }, h("div", { class: "speaker" }, actor()?.name ?? "You"), h("p", {}, text)));
+  els.transcript.append(h("div", { class: "turn-u msg-in" }, h("div", { class: "speaker" }, actor()?.name ?? "You"), h("p", {}, text)));
+  scrollDown();
 }
 
 function addAssistant(text, cls = "") {
-  const el = h("div", { class: `turn-a ${cls}` }, h("div", { class: "speaker" }, "Alexa"), h("p", {}, text));
+  const el = h("div", { class: `turn-a msg-in ${cls}` }, h("div", { class: "speaker" }, "Alexa"), h("p", {}, text));
   els.transcript.append(el);
-  els.transcript.scrollTop = els.transcript.scrollHeight;
+  scrollDown();
   return el;
 }
 
-function speak(text) {
-  if (!els.tts.checked || !("speechSynthesis" in window)) return;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.02;
-  speechSynthesis.speak(u);
+function scrollDown() {
+  els.transcript.scrollTop = els.transcript.scrollHeight;
 }
 
+// ---------- speech ----------
+function stopSpeaking() {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  if (speaking) {
+    speaking = false;
+    if (orb) setOrb("idle");
+  }
+}
+
+function speak(text) {
+  if (!els.tts.checked || !("speechSynthesis" in window) || !text) return false;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.98;
+  u.pitch = 1;
+  const voice = speechSynthesis.getVoices().find((v) => /en[-_](US|GB|IN)/i.test(v.lang) && /natural|neural|online/i.test(v.name))
+    ?? speechSynthesis.getVoices().find((v) => /^en/i.test(v.lang));
+  if (voice) u.voice = voice;
+  u.onstart = () => { speaking = true; setOrb("speaking"); };
+  u.onboundary = () => orb.pulse();
+  u.onend = () => { if (speaking) { speaking = false; setOrb("idle"); } };
+  u.onerror = () => { speaking = false; setOrb("idle"); };
+  speechSynthesis.speak(u);
+  return true;
+}
+
+// ---------- a turn ----------
 export async function send(text) {
   text = text.trim();
   if (!text || busy) return;
+  stopSpeaking();
   busy = true;
-  els.mic.classList.add("busy");
+  lastText = text;
   els.sendBtn.disabled = true;
   addUser(text);
-  const thinking = addAssistant("Checking Tend…", "thinking");
+  setOrb("thinking");
+  const pending = h("div", { class: "turn-a thinking msg-in", "aria-hidden": "true" }, h("div", { class: "speaker" }, "Alexa"), h("p", {}, "Checking the care record…"));
+  els.transcript.append(pending);
+  scrollDown();
   try {
     const turn = await agentTurn(text, sessionId);
-    thinking.remove();
+    pending.remove();
     const el = addAssistant(turn.reply);
     if (turn.engineNote) el.append(h("div", { class: "engine-note" }, turn.engineNote));
-    const meta = h("div", { class: "turn-meta" },
-      turn.tools.map((t) => h("span", { class: `tool-pill ${t.blockedByHost ? "blocked" : ""}`, title: t.blockedByHost ?? "" }, t.name)),
-      h("span", {}, `${turn.ms} ms`),
-      h("a", { href: "#/developer", onclick: () => { sessionStorage.setItem("tend.devtab", "turns"); } }, "Trace"));
-    el.append(meta);
+    const did = [...new Set(turn.tools.filter((t) => ACTIVITY[t.name] && !t.isError).map((t) => ACTIVITY[t.name]))];
+    const blocked = turn.tools.some((t) => t.blockedByHost);
+    el.append(h("div", { class: "turn-meta" },
+      did.map((d) => h("span", { class: "did" }, icon("check", "sm"), d)),
+      blocked ? h("span", { class: "did warn" }, icon("shield", "sm"), "Waited for your confirmation") : null,
+      h("a", { href: "#/developer", onclick: () => { try { sessionStorage.setItem("tend.devtab", "turns"); } catch { /* ignore */ } } }, "Trace")));
     for (const card of turn.cards ?? []) mountCard(el, card);
-    speak(turn.reply);
+    const wrote = turn.tools.some((t) => !t.isError && ["log_dose", "confirm_action", "add_care_note", "record_refill_pickup", "add_medication"].includes(t.name));
+    // Settle the orb first; it switches to "speaking" only if the utterance really starts.
+    if (wrote) flashOrb("success");
+    else setOrb("idle");
+    speak(turn.speech ?? turn.reply);
+    scrollDown();
     await refresh("assistant");
   } catch (err) {
-    thinking.remove();
-    addAssistant(err.message, "error");
+    pending.remove();
+    const el = addAssistant(`I couldn't complete that. ${err.message}`, "error");
+    el.append(h("div", { class: "turn-meta" }, h("button", { class: "retry", type: "button", onclick: () => send(lastText) }, icon("refresh", "sm"), "Try again")));
+    flashOrb("error", 2600);
   } finally {
     busy = false;
-    els.mic.classList.remove("busy");
     els.sendBtn.disabled = false;
-    els.transcript.scrollTop = els.transcript.scrollHeight;
+    renderSuggestions();
   }
 }
 
@@ -123,7 +213,7 @@ function mountCard(parent, card) {
         post({
           jsonrpc: "2.0", id: msg.id, result: {
             protocolVersion: "2026-01-26",
-            hostInfo: { name: "tend-alexa-plus-simulator", version: "0.2.0" },
+            hostInfo: { name: "tend-alexa-plus-simulator", version: "0.3.0" },
             // Only caregivers get in-card actions; view-only users see a read-only card.
             hostCapabilities: { ...(writer ? { serverTools: {} } : {}), sandbox: { csp: { connectDomains: [], resourceDomains: [] } } },
             hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline"], toolInfo: { tool: { name: card.toolName } } },
@@ -157,12 +247,17 @@ function mountCard(parent, card) {
   window.addEventListener("message", onMessage);
 }
 
-// ---------- voice ----------
+// ---------- voice input ----------
 function setupMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
-    els.mic.disabled = true;
-    els.mic.title = "Voice input needs Chrome or Edge. Type instead.";
+    els.orbBtn.setAttribute("aria-disabled", "true");
+    els.orbBtn.title = "Voice input needs Chrome or Edge. Type your question instead.";
+    els.orbBtn.addEventListener("click", () => {
+      if (speaking) { stopSpeaking(); return; }
+      els.input.focus();
+      toast("Voice input isn't available in this browser. Type instead.");
+    });
     return;
   }
   const rec = new SR();
@@ -170,6 +265,7 @@ function setupMic() {
   rec.interimResults = true;
   let listening = false;
   let finalText = "";
+  rec.onstart = () => { listening = true; setOrb("listening"); els.orbBtn.setAttribute("aria-pressed", "true"); };
   rec.onresult = (e) => {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -180,55 +276,63 @@ function setupMic() {
   };
   rec.onend = () => {
     listening = false;
-    els.mic.classList.remove("listening");
-    els.mic.setAttribute("aria-pressed", "false");
+    els.orbBtn.setAttribute("aria-pressed", "false");
     const text = finalText.trim();
     finalText = "";
-    if (text) { els.input.value = ""; send(text); }
+    if (text) { els.input.value = ""; send(text); } else if (!busy) setOrb("idle");
   };
   rec.onerror = (e) => {
-    if (e.error === "not-allowed") toast("Microphone access is blocked. Type instead.", "error");
+    listening = false;
+    setOrb("idle");
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") toast("Microphone access is blocked. Type instead.", "error");
+    else if (e.error === "no-speech") toast("I didn't hear anything. Tap the orb and try again.");
   };
-  els.mic.addEventListener("click", () => {
+  els.orbBtn.addEventListener("click", () => {
     if (busy) return;
+    if (speaking) { stopSpeaking(); return; }
     if (listening) { rec.stop(); return; }
-    if ("speechSynthesis" in window) speechSynthesis.cancel();
     finalText = "";
-    listening = true;
-    els.mic.classList.add("listening");
-    els.mic.setAttribute("aria-pressed", "true");
-    rec.start();
+    try { rec.start(); } catch { /* already starting */ }
   });
 }
 
 export function mountAssistant(rail, { onClose }) {
-  const input = h("input", { maxlength: 500, placeholder: "Ask Alexa about the family's care…", "aria-label": "Message Alexa" });
+  orb = createOrb(54);
+  const input = h("input", { maxlength: 500, placeholder: "Ask about today's care…", "aria-label": "Message Alexa" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send" }, icon("send"));
-  const mic = h("button", { class: "mic", type: "button", "aria-label": "Talk to Alexa", "aria-pressed": "false" }, icon("mic", "lg"));
+  const orbBtn = h("button", { class: "orb-btn", type: "button", "aria-label": "Talk to Alexa (tap again to stop)", "aria-pressed": "false" }, orb.el, icon("mic", "orb-mic"));
   const tts = h("input", { type: "checkbox", checked: true });
-  const transcript = h("div", { class: "transcript", "aria-live": "polite" }, emptyState());
+  tts.addEventListener("change", () => { if (!tts.checked) stopSpeaking(); });
+  const transcript = h("div", { class: "transcript", "aria-live": "polite", "aria-relevant": "additions" }, emptyState());
   const suggestionsEl = h("div", { class: "suggestions", "aria-label": "Suggested requests" });
-  const engineSub = h("div", { class: "sub" });
-  els = { input, sendBtn, mic, tts, transcript, suggestions: suggestionsEl, engineSub };
+  const status = h("div", { class: "rail-status", role: "status" });
+  const stop = h("button", { class: "rail-stop", type: "button", hidden: true, onclick: stopSpeaking }, icon("close", "sm"), "Stop speaking");
+  els = { input, sendBtn, orbBtn, tts, transcript, suggestions: suggestionsEl, status, stop };
   rail.replaceChildren(
     h("div", { class: "rail-head" },
-      h("div", {}, h("div", { class: "title" }, "Alexa+"), engineSub),
+      h("div", {}, h("div", { class: "title" }, "Alexa+ ", h("span", { class: "title-sub" }, "· Tend add-on")), status),
+      stop,
       h("button", { class: "icon-btn", type: "button", "aria-label": "Hide Alexa panel", title: "Hide", onclick: onClose }, icon("close", "sm"))),
     transcript,
     suggestionsEl,
-    h("div", { class: "composer" }, mic, h("form", { onsubmit: (e) => { e.preventDefault(); const t = input.value; input.value = ""; send(t); } }, input, sendBtn)),
-    h("div", { class: "rail-foot" }, h("label", {}, tts, "Speak replies"), h("button", { type: "button", onclick: newSession }, "New conversation")));
+    h("div", { class: "composer" }, orbBtn, h("form", { onsubmit: (e) => { e.preventDefault(); const t = input.value; input.value = ""; send(t); } }, input, sendBtn)),
+    h("div", { class: "rail-foot" },
+      h("label", {}, tts, "Speak replies"),
+      h("span", { class: "rail-sim" }, "Simulated device"),
+      h("button", { type: "button", onclick: newSession }, "New conversation")));
+  setOrb("idle");
   setupMic();
-  updateEngine();
   renderSuggestions();
 }
 
 export function updateEngine() {
-  if (!els) return;
-  const cfg = state.config;
-  els.engineSub.textContent = cfg.engine === "bedrock"
-    ? `Tend add-on · Amazon Bedrock${cfg.guardrail ? " + Guardrails" : ""} · simulated device`
-    : "Tend add-on · offline router (no LLM) · simulated device";
+  if (orb && els && (orb.state === "idle" || orb.state === "success")) setOrb("idle");
+}
+
+export function setAvailability(ok) {
+  if (!orb) return;
+  if (!ok) setOrb("unavailable");
+  else if (orb.state === "unavailable") setOrb("idle");
 }
 
 export function focusInput() {

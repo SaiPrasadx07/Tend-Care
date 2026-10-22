@@ -204,3 +204,11 @@ test("handoff report includes a per-day slot grid for adherence visualisation", 
   const missedInGrid = met.daily.flatMap((d) => d.slots).filter((s) => s.state === "missed").length;
   assert.equal(missedInGrid, met.missed);
 });
+
+test("pending refill actions name their medication, so UIs can show them in place", () => {
+  const { care } = setup();
+  const met = care.listRecipients()[0]!.medications.find((m) => m.name === "Metformin")!;
+  const pending = care.requestRefill({ medication: "metformin" }, PRIYA);
+  assert.equal(pending.medicationId, met.id);
+  assert.equal(care.getStatus().pendingActions[0]!.medicationId, met.id);
+});

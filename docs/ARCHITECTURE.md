@@ -75,3 +75,14 @@ All care state lives in SQLite, not in an MCP session. So `/mcp` builds a fresh 
 - **Visuals** (`charts.js`): the day timeline is SVG with percentage coordinates, so it's crisp at any width without resize handling. The adherence heatmap is an accessible HTML grid (`role="table"`) fed by the handoff report's per-day `daily` grid. Supply runway bars are drawn against a 30-day scale with the 7-day refill point. Status always appears as icon + label + color, using a palette validated for color-vision deficiency on the ivory surface.
 - **Live sync:** a 20 s poll while the tab is visible, a diff against the previous snapshot to highlight changed doses and new activity, and toasts for changes by other caregivers.
 - **Developer workspace:** every JSON-RPC message from the dashboard, cards, inspector and assistant is kept in a ring buffer with source and latency, so the protocol stays inspectable without dominating the caregiver experience.
+
+## Assistant pipeline (current)
+
+1. **Input:** `POST /api/agent/turn` with the caregiver's short-lived token. The text is trimmed to 500 chars.
+2. **MCP session:** `connectMcp` runs `initialize` and `tools/list` as that caregiver, so a viewer's tool list has no write tools.
+3. **Engine:**
+   - *Offline:* `intent.ts` classifies intent and entities. `offline.ts` keeps per-session context (person, medicine, last intent, time scope, the family's words, a pending clarification). It either asks a question or calls the minimum tools and composes a reply from their `structuredContent`. The household lookup is cached for 30 s per session.
+   - *Bedrock:* the Converse tool-use loop, with the conversational rules in the system prompt.
+4. **Safety:** `confirm_action` needs an affirmative in this turn for an action offered in an earlier turn (host). The server enforces permissions, schema validation and the double-dose guard.
+5. **Output:** `reply` (display), `speech` (spoken: units expanded, drafts omitted), a trace per tool, at most one MCP Apps card, and the raw wire log.
+6. **UI:** the orb reflects real events only. Tool activity is described in caregiver language ("Checked today's doses"), with the raw trace one click away in Developer.

@@ -60,7 +60,8 @@ function attention(status, forecast) {
       h("div", { class: "attn-body" }, a.summary),
       h("div", { class: "attn-actions" }, canWrite() ? h("button", { class: "btn btn-primary btn-sm", onclick: () => reviewPending(a) }, "Review") : h("span", { class: "tiny muted" }, "View only"))));
   }
-  for (const f of forecast.filter((x) => x.urgency !== "ok")) {
+  const pendingMeds = new Set(status.pendingActions.map((a) => a.medicationId).filter(Boolean));
+  for (const f of forecast.filter((x) => x.urgency !== "ok" && !pendingMeds.has(x.medicationId))) {
     cards.push(h("article", { class: `attn ${f.urgency}` },
       h("div", { class: "attn-kicker" }, icon(f.urgency === "critical" ? "alert" : "box", "sm"), f.urgency === "critical" ? `Runs out in ${plural(f.daysLeft, "day")}` : `${f.daysLeft} days of supply`),
       h("div", { class: "attn-title" }, `${f.personName}'s ${f.medication}`),
@@ -154,18 +155,42 @@ export function activityFeed(items, { limit = 12, newIds } = {}) {
   return list;
 }
 
+/** Same count as the "Needs you now" cards, so the numbers always agree. */
+export function attentionCount(status, forecast) {
+  const pendingMeds = new Set(status.pendingActions.map((a) => a.medicationId).filter(Boolean));
+  return status.people.flatMap((p) => p.slots).filter((x) => x.state === "missed" || x.state === "due").length
+    + status.pendingActions.length
+    + forecast.filter((f) => f.urgency !== "ok" && !pendingMeds.has(f.medicationId)).length;
+}
+
+function glance(status, forecast) {
+  const slots = status.people.flatMap((p) => p.slots);
+  const given = slots.filter((x) => x.state === "taken").length;
+  const needs = attentionCount(status, forecast);
+  const low = forecast.filter((f) => f.urgency !== "ok").length;
+  const stat = (label, value, of, tone) => h("div", { class: `glance-item ${tone ?? ""}` },
+    h("dt", {}, label), h("dd", { class: "num" }, String(value), of != null ? h("span", {}, ` / ${of}`) : null));
+  return h("dl", { class: "glance", "aria-label": "Today at a glance" },
+    stat("Doses given", given, slots.length),
+    stat("Need you now", needs, null, needs ? "alert" : "calm"),
+    stat("Running low", low, null, low ? "warn" : "calm"));
+}
+
 export function renderToday() {
   const { status, forecast, handoff, activity } = state.data;
   const isToday = status.date === localYmd();
+  const needCount = attentionCount(status, forecast);
   return h("div", { class: "view" },
-    h("header", { class: "hero" },
-      h("div", {},
+    h("header", { class: "hero hero-today" },
+      h("div", { class: "hero-copy" },
         h("p", { class: "eyebrow" }, isToday ? "Today" : "Schedule"),
         h("h1", { class: "display display-xl" }, fmtDateLong(status.date)),
         h("p", { class: "lede" }, summarySentence(status, forecast))),
-      h("div", { class: "sync", "aria-live": "polite" }, h("span", { class: "pulse" }), state.fetchedAt ? `Synced ${relTime(state.fetchedAt.toISOString())}` : "Syncing…")),
+      h("div", { class: "hero-side" },
+        glance(status, forecast),
+        h("div", { class: "sync", "aria-live": "polite" }, h("span", { class: "pulse" }), state.fetchedAt ? `Synced with the care circle ${relTime(state.fetchedAt.toISOString())}` : "Syncing…"))),
     h("section", { "aria-label": "Needs attention", class: "stack" },
-      h("div", { class: "section-head" }, h("h2", { class: "section-title" }, "Needs attention")),
+      h("div", { class: "section-head" }, h("h2", { class: "section-title" }, needCount ? `Needs you now · ${needCount}` : "Needs you now")),
       attention(status, forecast)),
     h("section", { class: "card", style: "margin-top:28px" },
       h("div", { class: "section-head" },
@@ -175,7 +200,8 @@ export function renderToday() {
     h("section", { class: "card", style: "margin-top:20px" },
       h("div", { class: "section-head" },
         h("div", {}, h("h2", { class: "section-title" }, "Care circle"), h("p", { class: "small muted" }, "Who did what. Every record names the caregiver who made it."))),
-      activityFeed(activity, { limit: 10, newIds: state.newActivity })));
+      activityFeed(activity, { limit: 8, newIds: state.newActivity }),
+      h("a", { href: "#/handoff", class: "btn btn-ghost btn-sm", style: "margin-top:8px" }, "Full history in the handoff report", icon("chevron", "sm"))));
 }
 
 export { slotKey };

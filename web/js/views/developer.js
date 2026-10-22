@@ -155,8 +155,16 @@ function turns(root) {
           s.blockedByHost ? h("span", { class: "hint destructive" }, "blocked by host policy") : s.isError ? h("span", { class: "hint destructive" }, "error") : null,
           h("div", { class: "args" }, JSON.stringify(s.arguments)),
           h("div", { class: "small" }, s.speech)))),
-      h("p", { class: "small", style: "margin:8px 0 0" }, h("b", {}, "Reply: "), t.reply)));
+      h("p", { class: "small", style: "margin:8px 0 0" }, h("b", {}, "Reply: "), t.reply),
+      t.speech && t.speech !== t.reply ? h("p", { class: "tiny muted", style: "margin:4px 0 0" }, h("b", {}, "Spoken as: "), t.speech) : null));
   }
+}
+
+function modeBanner() {
+  const cfg = state.config;
+  return cfg.engine === "bedrock"
+    ? h("div", { class: "callout info mode" }, icon("sparkle", "sm"), h("span", {}, h("b", {}, "Model mode. "), `Amazon Bedrock (${cfg.model}) chooses tools and writes replies. The host still enforces the confirmation gate and the server enforces permissions and the double-dose guard.`))
+    : h("div", { class: "callout mode" }, icon("info", "sm"), h("span", {}, h("b", {}, "Offline mode. "), "No language model is connected. Tend's intent router picks tools deterministically and composes replies from their verified results. Set AWS credentials to use Amazon Bedrock."));
 }
 
 export function renderDeveloper() {
@@ -187,5 +195,5 @@ export function renderDeveloper() {
     h("header", { class: "hero", style: "margin-bottom:0" },
       h("div", {}, h("p", { class: "eyebrow" }, "Developer workspace"), h("h1", { class: "display display-xl" }, "Under the hood"),
         h("p", { class: "lede" }, "Tend is a self-hosted MCP server. Everything the care circle sees above comes from these tools, over this protocol, with these permissions."))),
-    tabBar, body);
+    modeBanner(), tabBar, body);
 }

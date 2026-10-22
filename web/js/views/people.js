@@ -1,5 +1,5 @@
 import { state, canWrite } from "../api.js";
-import { h, icon, monogram, hhmmLabel, fmtDay, fmtTime, urgencyChip, listJoin } from "../ui.js";
+import { h, icon, monogram, hhmmLabel, fmtDay, fmtTime, urgencyChip, listJoin, relTime } from "../ui.js";
 import { addNote, addMedication, viewOnlyReason } from "../actions.js";
 import { adherenceGrid, stateLegend } from "../charts.js";
 
@@ -61,11 +61,39 @@ function profile(person, status, handoffPerson, forecast) {
           : h("p", { class: "muted small" }, "No notes in this period."))));
 }
 
+const ROLE_TEXT = {
+  caregiver: "Can log doses, add notes and medications, and request refills.",
+  viewer: "Can see everything. Can't change the care record.",
+};
+
+function careCircle(recipients, activity) {
+  const last = new Map();
+  for (const a of activity) if (!last.has(a.actor)) last.set(a.actor, a);
+  const me = state.actorId;
+  return h("section", { class: "circle" },
+    h("div", { class: "circle-recipients" },
+      h("p", { class: "eyebrow" }, "Caring for"),
+      h("div", { class: "circle-people" }, recipients.map((p) => h("a", { class: "circle-person", href: `#/people`, onclick: (e) => { e.preventDefault(); document.getElementById(`person-${p.personId}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+        monogram(p.name, "md"), h("span", {}, h("b", {}, p.name), h("small", {}, [p.aliases.join(" · "), `${p.medications.length} medications`].filter(Boolean).join(" · "))))))),
+    h("div", { class: "circle-team" },
+      h("p", { class: "eyebrow" }, "The care circle"),
+      h("ul", { class: "team" }, state.config.caregivers.map((c) => {
+        const a = last.get(c.name);
+        return h("li", { class: c.id === me ? "me" : "" },
+          monogram(c.name),
+          h("div", {},
+            h("div", { class: "team-name" }, c.name, c.id === me ? h("span", { class: "you" }, "you") : null, h("span", { class: `role ${c.role}` }, c.role === "viewer" ? "View only" : "Caregiver")),
+            h("p", {}, ROLE_TEXT[c.role]),
+            h("p", { class: "tiny muted" }, a ? `Last update ${relTime(a.at)}: ${a.message}` : "No recent updates in the care record.")));
+      }))));
+}
+
 export function renderPeople() {
-  const { recipients, status, handoff, forecast } = state.data;
+  const { recipients, status, handoff, forecast, activity } = state.data;
   return h("div", { class: "view" },
     h("header", { class: "hero" },
-      h("div", {}, h("p", { class: "eyebrow" }, "People"), h("h1", { class: "display display-xl" }, "Who we care for"),
-        h("p", { class: "lede" }, "Medications, schedules, supply and notes for each person, kept in one place for everyone who helps."))),
-    h("div", { class: "stack" }, recipients.map((p) => profile(p, status.people.find((x) => x.personId === p.personId), handoff.people.find((x) => x.personId === p.personId), forecast))));
+      h("div", {}, h("p", { class: "eyebrow" }, "People"), h("h1", { class: "display display-xl" }, "The care circle"),
+        h("p", { class: "lede" }, "Who we look after, who helps, and what each person is allowed to do. Medications, supply and notes are kept in one shared record."))),
+    careCircle(recipients, activity),
+    h("div", { class: "stack", style: "margin-top:28px" }, recipients.map((p) => profile(p, status.people.find((x) => x.personId === p.personId), handoff.people.find((x) => x.personId === p.personId), forecast))));
 }

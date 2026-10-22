@@ -168,7 +168,7 @@ export async function runOffline(text: string, session: OfflineSession, call: Ca
       return s;
     }
     if (upcoming.length && !done.length) {
-      return `${cap(ref(p.name))} has ${listJoin(upcoming.map((x) => `${short(x.medication)} at ${t12(x.time)}`))} ${when}. Nothing has been due yet.`;
+      return `${cap(ref(p.name))} has ${listJoin(upcoming.map((x) => `${short(x.medication)} at ${t12(x.time)}`))} ${when}. None of these has come due yet.`;
     }
     if (upcoming.length) {
       const next = upcoming[0]!;

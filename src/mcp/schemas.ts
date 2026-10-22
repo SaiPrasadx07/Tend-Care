@@ -39,6 +39,7 @@ export const pendingActionView = z.object({
   summary: z.string(),
   createdBy: z.string(),
   expiresAt: z.string(),
+  medicationId: z.string().nullable(),
 });
 
 const slotState = z.enum(["taken", "skipped", "missed", "due", "upcoming"]);

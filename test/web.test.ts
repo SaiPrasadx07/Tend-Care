@@ -54,6 +54,34 @@ describe("caregiver web app", () => {
     }
   });
 
+  test("initial splash is an accessible status region with an honest failure path", async () => {
+    const html = await (await fetch(`${h.base}/`)).text();
+    const splash = /<div class="splash" id="splash"([^>]*)>/.exec(html)?.[1] ?? "";
+    assert.match(splash, /role="status"/);
+    assert.match(splash, /aria-live="polite"/);
+    assert.match(splash, /aria-busy="true"/);
+    assert.match(html, /id="splashRetry"/);
+    const splashHtml = html.slice(html.indexOf('<div class="splash"'), html.indexOf('<a class="sr-only"'));
+    assert.ok(splashHtml.length > 100);
+    assert.doesNotMatch(splashHtml, /%|progress/i, "no fake progress percentage");
+  });
+
+  test("orb and speech controls respect reduced motion and never imply activity", async () => {
+    const css = await (await fetch(`${h.base}/styles.css`)).text();
+    // The orb's "animation: none" rule must sit inside a prefers-reduced-motion block.
+    const rule = ".orb, .orb > span { animation: none !important; }";
+    const at = css.indexOf(rule);
+    assert.ok(at > 0, "reduced-motion rule for the orb exists");
+    const block = css.lastIndexOf("@media (prefers-reduced-motion: reduce)", at);
+    assert.ok(block > 0 && !css.slice(block, at).includes("\n}\n"), "orb rule is inside the reduced-motion media block");
+    assert.ok(css.includes(".rail-stop[hidden] { display: none !important; }"), "stop-speaking is hidden unless speech is playing");
+    for (const st of ["listening", "thinking", "speaking", "success", "error", "unavailable"]) {
+      assert.ok(css.includes(`.orb[data-state="${st}"]`), `orb state ${st} is styled`);
+    }
+    const orbJs = await (await fetch(`${h.base}/js/orb.js`)).text();
+    assert.match(orbJs, /unavailable: "Alexa\+ is unavailable"/);
+  });
+
   test("MCP Apps sandbox proxy forbids network access from views", async () => {
     const res = await fetch(`${h.base}/sandbox-proxy.html`);
     assert.equal(res.status, 200);
