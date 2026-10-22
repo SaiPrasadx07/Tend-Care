@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BedrockEngine } from "./bedrock.ts";
 import { connectMcp, type WireEntry } from "./mcpClient.ts";
-import { AFFIRMATIVE, NEGATIVE, runOffline, type OfflineSession } from "./offline.ts";
+import { AFFIRMATIVE, NEGATIVE, runOffline, newOfflineSession, toSpeech, type OfflineSession } from "./offline.ts";
 import type { EngineChoice } from "../config.ts";
 import type { Actor } from "../domain/care.ts";
 import { zonedParts, formatDateLong, formatTime12 } from "../domain/time.ts";
@@ -34,6 +34,8 @@ export interface UiCard {
 
 export interface TurnResult {
   reply: string;
+  /** Spoken form of the reply (units expanded, long drafts omitted). Same facts as `reply`. */
+  speech: string;
   engine: "bedrock" | "offline";
   engineNote: string | null;
   protocolVersion: string | null;
@@ -110,7 +112,7 @@ export class CareAgent {
         const oldest = [...this.sessions.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
         if (oldest) this.sessions.delete(oldest[0]);
       }
-      s = { actorId: actor.id, history: [], offline: {}, offeredActions: new Set(), lastUsed: nowMs };
+      s = { actorId: actor.id, history: [], offline: newOfflineSession(), offeredActions: new Set(), lastUsed: nowMs };
       this.sessions.set(id, s);
     }
     s.lastUsed = nowMs;
@@ -125,6 +127,11 @@ export class CareAgent {
     const local = zonedParts(this.now(), this.opts.timezone);
     return [
       "You are Alexa+, running the Tend care-circle add-on. You are speaking out loud on an Echo Show, so answer in one to three short, warm, plain sentences. No markdown, no lists, no emojis.",
+      "Answer the question that was actually asked, using the fewest tool calls that answer it. A question about one person or one medicine gets an answer about that person or medicine only; never recite the whole household's status unless asked.",
+      "If a request is vague (for example 'I want to know about the medicine'), ask one short clarifying question, such as whether they want today's doses or a particular medicine, instead of dumping information. Clear questions get direct answers.",
+      "Use the conversation so far for follow-ups ('what about tonight?', 'and Dad?'). If the referent is unclear, ask. Never carry an assumed person or medicine into a write; resolve it first.",
+      "Only record a dose when the caregiver says it was given. If they sound unsure ('probably', 'I think'), ask them to confirm before calling log_dose.",
+      "Style: calm and concise. Mirror the family's words ('Mom'). Don't open with 'Of course' or 'Certainly', don't repeat the question back, don't keep using the caregiver's name, and only say an action succeeded when the tool result confirms it.",
       `The speaker is ${actor.name} (${actor.role === "caregiver" ? "a caregiver who can log and change records" : "view-only; cannot change records"}).`,
       `Current local time: ${formatDateLong(local.date)}, ${formatTime12(local.time)} (${this.opts.timezone}). Today is ${local.date}.`,
       "Use Tend's tools for every fact about medications, doses, supply and notes; never invent them. Call list_care_recipients if you need to resolve who 'Mom' or 'Dad' is.",
@@ -212,6 +219,8 @@ export class CareAgent {
     let reply: string;
     let usage: TurnResult["usage"] = null;
     let guardrailIntervened = false;
+    let speech: string | undefined;
+    const offlineOpts = { timezone: this.opts.timezone, now: this.now, actorName: input.actor.name.replace(/^Nurse\s+/, "") };
     try {
       if (this.opts.bedrock) {
         try {
@@ -231,10 +240,14 @@ export class CareAgent {
           // auto mode: degrade to the offline router rather than failing the demo.
           engine = "offline";
           engineNote = `Bedrock unavailable (${err instanceof Error ? err.name : "error"}); used the offline router.`;
-          reply = await runOffline(text, session.offline, callTool);
+          const r = await runOffline(text, session.offline, callTool, offlineOpts);
+          reply = r.reply;
+          speech = r.speech;
         }
       } else {
-        reply = await runOffline(text, session.offline, callTool);
+        const r = await runOffline(text, session.offline, callTool, offlineOpts);
+        reply = r.reply;
+        speech = r.speech;
       }
     } finally {
       for (const id of offeredThisTurn) session.offeredActions.add(id);
@@ -242,11 +255,13 @@ export class CareAgent {
     }
     return {
       reply,
+      speech: speech ?? toSpeech(reply),
       engine,
       engineNote,
       protocolVersion: mcp.protocolVersion ?? null,
       tools: traces,
-      cards,
+      // One card per turn: the most recent visual result is the one that answers the question.
+      cards: cards.slice(-1),
       wire,
       usage,
       guardrail: { configured: Boolean(this.opts.bedrock?.guardrail), intervened: guardrailIntervened },

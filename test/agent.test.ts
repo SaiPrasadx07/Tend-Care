@@ -35,7 +35,9 @@ describe("Alexa+ simulator agent (offline router) over real MCP", () => {
       assert.deepEqual(methods.slice(0, 3), ["initialize", "notifications/initialized", "tools/list"]);
       assert.ok(methods.includes("tools/call"));
       assert.ok(r.tools.some((t) => t.name === "get_care_status"));
-      assert.match(r.reply, /Lakshmi/);
+      // Replies mirror the caregiver's words ("Mom") and stay on the person asked about.
+      assert.match(r.reply, /Mom|Lakshmi/);
+      assert.doesNotMatch(r.reply, /Ravi|Dad/);
       assert.equal(r.cards[0]?.resourceUri, "ui://tend/care-board");
       assert.match(r.cards[0]!.html, /ui\/initialize/);
     } finally {
