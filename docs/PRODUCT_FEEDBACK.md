@@ -1,13 +1,13 @@
 # Product feedback (for the Devpost "Product Feedback" field)
 
-> **Before submitting:** the Bedrock and Guardrails statements below describe how the integration is built and tested with a mocked client. Re-check them against what you actually saw in the live run (`npm run smoke:bedrock`, demo recording) and edit anything that didn't hold.
+> **Status before submitting:** the Bedrock and Guardrails integration is implemented and covered by scripted/mock-client tests. Live Bedrock inference has not been verified because AWS account/model access verification is pending; no live Guardrail has been verified or used in the demo. Keep answers below framed as implementation and testing unless live verification succeeds.
 
 ## Which developer tools, APIs and SDKs did you use, and for what?
 
 - **Model Context Protocol (spec 2025-11-25), TypeScript SDK `@modelcontextprotocol/sdk` 1.32:** Tend's self-hosted MCP server (`McpServer`, stateless `StreamableHTTPServerTransport`) and the simulator's MCP client (`Client`, `StreamableHTTPClientTransport`).
 - **MCP Apps extension (`io.modelcontextprotocol/ui`, 2026-01-26):** the interactive care-board card (`ui://tend/care-board`) and our own host implementation with the sandbox proxy.
-- **Amazon Bedrock Runtime (Converse API with tool use) via AWS SDK for JavaScript v3:** the assistant's reasoning. It maps speech to MCP tool calls and phrases replies for voice.
-- **Amazon Bedrock Guardrails** (`@aws-sdk/client-bedrock` to create, `guardrailConfig` + `guardContent` at runtime): a denied topic for medical advice, plus a prompt-attack filter.
+- **Amazon Bedrock Runtime (Converse API with tool use) via AWS SDK for JavaScript v3:** implemented as an optional reasoning engine. It maps speech to MCP tool calls and phrases replies for voice; live inference remains unverified.
+- **Amazon Bedrock Guardrails** (`@aws-sdk/client-bedrock` to create, `guardrailConfig` + `guardContent` at runtime): optional integration for a denied topic for medical advice and a prompt-attack filter; live use remains unverified.
 - Alexa+ (target platform): simulated in a web app per the official FAQ, because the add-on tooling is partner-only.
 
 ## What worked well?
@@ -34,7 +34,7 @@ MCP hello-world over Streamable HTTP took under an hour with the SDK. A Bedrock 
 
 ## AWS services used (AWS Builder mini challenge)
 
-Amazon Bedrock Runtime (Converse API, tool use) is the reasoning layer of the Alexa+ experience. Amazon Bedrock Guardrails enforces "no medical advice" (denied topics plus a prompt-attack filter), applied only to user input via `guardContent`. See [AWS_INTEGRATION.md](AWS_INTEGRATION.md).
+The code integrates Amazon Bedrock Runtime (Converse API with tool use) as an optional reasoning engine and Amazon Bedrock Guardrails as an optional filter applied to user input via `guardContent`. Both are covered by mocked-client tests, but live Bedrock inference and Guardrails have not been verified or used in the demo because AWS account/model access verification is pending. See [AWS_INTEGRATION.md](AWS_INTEGRATION.md).
 
 ## Feature requests (optional field)
 

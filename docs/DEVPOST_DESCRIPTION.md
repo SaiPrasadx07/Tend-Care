@@ -18,14 +18,14 @@ Tend is an Alexa+ add-on built as a self-hosted **MCP server** (spec **2025-11-2
 - *"Reorder Mom's metformin"* → *"Yes"*: a **two-step** refill. The summary is read back, and only an explicit yes in a later turn executes it. The host enforces this, not the model.
 - *"Note that Dad felt dizzy"* / *"Give me this week's handoff"*: observations plus adherence percentages and missed doses, ready for the next sibling or a doctor visit.
 - Per-caregiver identity and a **view-only** role (e.g. a visiting nurse sees status, and write tools aren't even listed for them).
-- **No medical advice**, enforced in the server instructions, the system prompt and an **Amazon Bedrock Guardrail**.
+- **No medical advice**, handled by the assistant's server-side rules and system prompt. Optional Bedrock Guardrails are integrated in code but have not been verified live.
 
 ## How we built it
 
 - **MCP server:** TypeScript on Node 24 with the official MCP SDK. Stateless Streamable HTTP (a fresh server per request, role-scoped tool lists from the bearer token). 13 tools with zod-validated inputs **and output schemas**, tool annotations (`readOnlyHint`, `destructiveHint`), and voice-ready text plus `structuredContent` in every result. SQLite (`node:sqlite`) keeps state across sessions and caregivers.
 - **MCP Apps:** `ui://tend/care-board` (`text/html;profile=mcp-app`) renders status, refill and handoff results. We implemented the host side too: a sandbox proxy, the `ui/initialize` handshake, tool-result notifications, and a proxied `tools/call` for the card's **Mark given** button.
 - **Caregiver app + Alexa+ companion:** a caregiver command center (day timelines, an adherence heatmap, supply runway, profiles and a printable handoff report) built entirely on Tend's MCP tools. A docked Alexa+ companion (voice in via Web Speech, voice out via speech synthesis) is a **real MCP client** too: every turn runs `initialize → tools/list → tools/call` over Streamable HTTP and refreshes the dashboard. A separate developer workspace shows the raw JSON-RPC, tool catalog and turn traces.
-- **AWS (AWS Builder):** the assistant reasons on **Amazon Bedrock**'s Converse API with tool use. MCP `tools/list` becomes Bedrock tool specs, each `toolUse` becomes an MCP `tools/call`, and results return as text plus JSON. **Bedrock Guardrails** denies medical-advice topics, applied only to the user's words via `guardContent` so medication names in tool results don't false-trigger.
+- **AWS (AWS Builder):** the Bedrock Converse tool-use integration is implemented: MCP `tools/list` becomes Bedrock tool specs, each `toolUse` becomes an MCP `tools/call`, and results return as text plus JSON. It is covered by automated tests with a scripted Converse client, but **live Bedrock inference has not yet been verified** because AWS account/model access verification is pending. Optional Bedrock Guardrails are implemented in code; no live Guardrail has been verified or used in the demo.
 - **Safety and security:** the double-dose guard, two-phase actions with expiry and single-use compare-and-set, a host-side confirmation gate, bearer auth with short-lived HMAC session tokens for the browser, DNS-rebinding protection, rate limits, strict CSP and double-sandboxed MCP App views.
 - **Conversation:** an intent-aware assistant that asks a short clarifying question for vague requests, answers clear ones narrowly, follows up with context ("What about tonight?"), and never writes on an assumption (ambiguous medicine → "for Mom or Dad?"; "she probably took it" → confirm first). Offline it's a deterministic intent engine composing replies from verified tool results; with AWS configured, Bedrock generates them under the same rules.
 - **Tests:** 147 automated tests against the real HTTP server, covering protocol negotiation, auth, the guards, timezone/DST math, and the Bedrock tool loop with a scripted client (including a model that tries to self-confirm a refill and is blocked).
@@ -45,7 +45,7 @@ Tend is an Alexa+ add-on built as a self-hosted **MCP server** (spec **2025-11-2
 
 ## What we learned
 
-MCP's output schemas and Bedrock's tool blocks fit together almost perfectly. The hard part of voice agents is the *host policy* around the model, not the model call.
+MCP's output schemas and Bedrock's tool blocks fit together almost perfectly in the tested integration. The hard part of voice agents is the *host policy* around the model, not the model call; live Bedrock verification remains pending.
 
 ## What's next
 
